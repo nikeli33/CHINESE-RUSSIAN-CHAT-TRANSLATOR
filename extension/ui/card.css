@@ -1,0 +1,582 @@
+/* 红龙 Переводчик — карточка перевода.
+   Токены сняты с сайта (web/src/app/globals.css, «тушь и золото»):
+   тушь #0d0d0d–#2a2a2a, холодная бумага #e2e2e9 / #f4f4f8, киноварь #c61502,
+   печать #9c4141, золото #d8c391, бронза #6b5530. Углы острые — 2–3px.
+   Шрифты: Cormorant Garamond (заголовки), Alegreya Sans (интерфейс),
+   иероглифы — системные засечки (SimSun / Songti), как KaiTi на сайте. */
+
+@font-face {
+  font-family: "Alegreya Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("__EXT__fonts/alegreya-sans-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F, U+20AC, U+2122, U+2212;
+}
+@font-face {
+  font-family: "Alegreya Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("__EXT__fonts/alegreya-sans-cyrillic-400-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Alegreya Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("__EXT__fonts/alegreya-sans-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F, U+20AC, U+2122, U+2212;
+}
+@font-face {
+  font-family: "Alegreya Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("__EXT__fonts/alegreya-sans-cyrillic-500-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Cormorant Garamond";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("__EXT__fonts/cormorant-garamond-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F;
+}
+@font-face {
+  font-family: "Cormorant Garamond";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("__EXT__fonts/cormorant-garamond-cyrillic-500-normal.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491;
+}
+
+:host {
+  --ink-950: #0d0d0d;
+  --ink-900: #14161a;
+  --ink-800: #202020;
+  --ink-700: #2a2a2a;
+  --paper: #e2e2e9;
+  --paper-hi: #f4f4f8;
+  --paper-deep: #c9c9d2;
+  --paper-line: rgba(120, 122, 134, 0.28);
+  --ink: #363636;
+  --ink-strong: #2a2a2a;
+  --ink-muted: #7e7e7e;
+  --ink-faint: #a4a4a4;
+  --cta: #9c4141;
+  --cta-hi: #a85858;
+  --cta-lo: #8a3434;
+  --seal: #c61502;
+  --gold: #d8c391;
+  --bronze: #9c7e5a;
+  --bronze-deep: #6b5530;
+  --tone-1: #3f6fa8;
+  --tone-2: #4a8c5a;
+  --tone-3: #7d5a9c;
+  --tone-4: #a84a42;
+  --tone-5: #8a8a8a;
+  --font-sans: "Alegreya Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-display: "Cormorant Garamond", "Noto Serif SC", Georgia, serif;
+  --font-hanzi: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun",
+    "Microsoft YaHei", serif;
+
+  all: initial;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* ── Печать у выделения ──────────────────────────────────────────────────── */
+
+.ct-seal {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--paper-hi);
+  border: 1px solid var(--seal);
+  border-radius: 2px;
+  color: var(--seal);
+  font-family: var(--font-hanzi);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(13, 13, 13, 0.18);
+  transition: background 90ms linear, color 90ms linear;
+}
+
+.ct-seal:hover {
+  background: var(--seal);
+  color: var(--paper-hi);
+}
+
+.ct-seal:focus-visible {
+  outline: 2px solid var(--bronze);
+  outline-offset: 1px;
+}
+
+/* ── Карточка ────────────────────────────────────────────────────────────── */
+
+.ct-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+  width: max-content;
+  min-width: 248px;
+  max-width: 340px;
+  background: var(--paper-hi);
+  border: 1px solid var(--paper-line);
+  border-radius: 3px;
+  box-shadow: 0 10px 28px rgba(13, 13, 13, 0.22);
+  /* Карточка не должна быть выше окна: ответ Евы легко её вытягивает. */
+  max-height: calc(100vh - 16px);
+  overflow: hidden auto;
+  /* Чаты часто тёмные, и без этого нативные полосы прокрутки внутри карточки
+     рисуются чёрными — на бумажном фоне это выглядит как дыра. */
+  color-scheme: light;
+  animation: ct-in 120ms ease-out;
+}
+
+@keyframes ct-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ct-card {
+    animation: none;
+  }
+}
+
+.ct-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px 7px 12px;
+  border-bottom: 1px solid var(--paper-line);
+  background: var(--paper);
+}
+
+.ct-label {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bronze-deep);
+  white-space: nowrap;
+}
+
+.ct-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: var(--ink-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ct-close:hover {
+  color: var(--ink-strong);
+  background: var(--paper-deep);
+}
+
+.ct-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ct-primary {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ct-primary[data-lang="zh"] {
+  font-family: var(--font-hanzi);
+  font-size: 19px;
+  line-height: 1.45;
+  color: var(--seal);
+  letter-spacing: 0.01em;
+}
+
+.ct-pinyin {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  letter-spacing: 0.01em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ct-pinyin .t1 { color: var(--tone-1); }
+.ct-pinyin .t2 { color: var(--tone-2); }
+.ct-pinyin .t3 { color: var(--tone-3); }
+.ct-pinyin .t4 { color: var(--tone-4); }
+.ct-pinyin .t5 { color: var(--tone-5); }
+
+.ct-source {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding-top: 7px;
+  border-top: 1px solid var(--paper-line);
+}
+
+.ct-source[data-lang="zh"] {
+  font-family: var(--font-hanzi);
+  font-size: 13px;
+}
+
+.ct-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+
+.ct-btn {
+  flex: 1;
+  height: 30px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--paper-line);
+  border-radius: 2px;
+  color: var(--ink-strong);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 90ms linear, border-color 90ms linear;
+}
+
+.ct-btn:hover {
+  background: var(--paper);
+  border-color: var(--paper-deep);
+}
+
+.ct-btn:focus-visible {
+  outline: 2px solid var(--bronze);
+  outline-offset: 1px;
+}
+
+.ct-btn-primary {
+  background: var(--cta);
+  border-color: var(--cta-lo);
+  color: var(--paper-hi);
+}
+
+.ct-btn-primary:hover {
+  background: var(--cta-hi);
+  border-color: var(--cta);
+}
+
+.ct-btn-icon {
+  flex: none;
+  width: 30px;
+  padding: 0;
+  font-size: 14px;
+}
+
+.ct-btn[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── Служебные состояния ─────────────────────────────────────────────────── */
+
+.ct-note {
+  padding: 12px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+}
+
+.ct-note-strong {
+  color: var(--ink-strong);
+  font-weight: 500;
+}
+
+.ct-link {
+  color: var(--cta);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.ct-busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ct-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--seal);
+  animation: ct-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes ct-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ct-dot {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+.ct-hint {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ── Ева ─────────────────────────────────────────────────────────────────── */
+
+/* Карточка с Евой шире перевода: объяснение учителя в 250px не читается. */
+.ct-card[data-view="eva"] {
+  width: 340px;
+  max-width: 340px;
+}
+
+.ct-eva {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 11px;
+  border-top: 1px solid var(--paper-line);
+  background: var(--paper);
+}
+
+.ct-eva-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Круглая аватарка с золотым ободком — как значок Евы на сайте. */
+.ct-eva-face {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px var(--gold), 0 0 0 3px var(--paper-hi);
+}
+
+.ct-eva-who {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ct-eva-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  color: var(--ink-strong);
+}
+
+.ct-eva-role {
+  font-family: var(--font-sans);
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--bronze-deep);
+}
+
+.ct-eva-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.ct-chip {
+  padding: 5px 8px;
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--bronze-deep);
+  background: var(--paper-hi);
+  border: 1px solid var(--paper-line);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.ct-chip:hover {
+  color: var(--seal);
+  border-color: var(--seal);
+}
+
+.ct-eva-form {
+  display: flex;
+  gap: 6px;
+}
+
+.ct-eva-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  color: var(--ink-strong);
+  background: var(--paper-hi);
+  border: 1px solid var(--paper-line);
+  border-radius: 2px;
+  outline: none;
+}
+
+.ct-eva-input::placeholder {
+  color: var(--ink-faint);
+}
+
+.ct-eva-input:focus {
+  border-color: var(--bronze);
+}
+
+.ct-eva-send {
+  flex: none;
+  width: 30px;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1;
+  color: #fff;
+  background: var(--cta);
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ct-eva-send:hover {
+  background: var(--cta-hi);
+}
+
+/* Лог ответов: своя прокрутка, чтобы карточка не уезжала за экран. */
+.ct-eva-log {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  /* На низком окне лог уступает место остальной карточке, а не вылезает вниз. */
+  max-height: min(210px, 32vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+  /* В новых Chrome `scrollbar-width` отменяет ::-webkit-scrollbar, поэтому
+     цвет задаём стандартным свойством — иначе полоса остаётся системной. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--paper-deep) transparent;
+}
+
+.ct-eva-log[hidden] {
+  display: none;
+}
+
+.ct-eva-log::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ct-eva-log::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ct-eva-log::-webkit-scrollbar-button {
+  display: none;
+}
+
+.ct-eva-log::-webkit-scrollbar-thumb {
+  background: var(--paper-deep);
+  border-radius: 3px;
+}
+
+.ct-eva-q {
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 5px 8px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-strong);
+  background: var(--paper-deep);
+  border-radius: 2px;
+  overflow-wrap: anywhere;
+}
+
+.ct-eva-a {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+.ct-eva-a-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ct-eva-err {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--seal);
+}
+
+.ct-eva-link {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--cta);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}

@@ -1,0 +1,881 @@
+/**
+ * 红龙 Переводчик — интерфейс в странице.
+ *
+ * Что делает: замечает выделение, показывает у него печать «译», по клику
+ * (или по правому клику из меню) просит перевод у service worker, рисует
+ * карточку в shadow root и умеет вставить результат обратно в то поле,
+ * откуда текст был взят.
+ *
+ * Почему shadow root: страница чата приносит свои стили, сбросы и z-index.
+ * В изолированном дереве карточка выглядит одинаково везде, а `all: initial`
+ * на хосте отсекает наследование. В разметку страницы мы не пишем ничего,
+ * кроме одного пустого div с нулевым размером.
+ *
+ * Вставка — самое хрупкое место. Порядок: execCommand("insertText") →
+ * замена содержимого Range вручную → нативный сеттер value для input/textarea.
+ * Первый способ даёт настоящий beforeinput, который понимают Lexical,
+ * ProseMirror, Draft и редактор Telegram Web, и сохраняет нативный undo.
+ */
+
+(() => {
+  if (window.__ctChatLoaded) return;
+  window.__ctChatLoaded = true;
+  if (!/^https?:$/.test(location.protocol)) return;
+
+  const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+
+  const state = {
+    host: null,
+    shadow: null,
+    seal: null,
+    card: null,
+    saved: null,
+    css: null,
+    busy: false,
+    lastRect: null,
+    // Высота, под которую карточка уже поставлена: по ней понимаем, что она
+    // выросла (ответ Евы) и место надо пересчитать.
+    cardHeight: 0,
+    // Разговор с Евой живёт ровно столько, сколько открыта карточка.
+    evaMessages: [],
+    evaLog: null,
+    evaSink: null,
+    evaBusy: false,
+  };
+
+  /* ── Стили ─────────────────────────────────────────────────────────────── */
+
+  function loadCss() {
+    if (!state.css) {
+      state.css = fetch(chrome.runtime.getURL("ui/card.css"))
+        .then((r) => r.text())
+        .then((text) => text.split("__EXT__").join(chrome.runtime.getURL("")))
+        .catch(() => "");
+    }
+    return state.css;
+  }
+
+  async function ensureHost() {
+    if (state.host && state.host.isConnected) return state.shadow;
+
+    const host = document.createElement("div");
+    host.setAttribute("data-ct-root", "");
+    // Нулевой фиксированный контейнер в углу вьюпорта: дети с position:absolute
+    // считают координаты от него, то есть в координатах экрана. Сам он прозрачен
+    // для мыши, кликабельны только печать и карточка.
+    host.style.cssText =
+      "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;";
+    (document.body || document.documentElement).appendChild(host);
+
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = await loadCss();
+    shadow.appendChild(style);
+
+    state.host = host;
+    state.shadow = shadow;
+    return shadow;
+  }
+
+  /* ── Что было выделено ─────────────────────────────────────────────────── */
+
+  /** Ближайший (самый внешний) редактируемый предок узла. */
+  function editableFrom(node) {
+    let el = node && node.nodeType === 3 ? node.parentElement : node;
+    let found = null;
+    while (el && el !== document.documentElement) {
+      if (el.isContentEditable) found = el;
+      else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return el;
+      el = el.parentElement;
+    }
+    return found;
+  }
+
+  function captureSelection() {
+    const active = document.activeElement;
+
+    // Поле ввода: window.getSelection() в input/textarea пуст, а позиции
+    // выделения живут в selectionStart/End и переживают потерю фокуса.
+    if (
+      active &&
+      (active.tagName === "INPUT" || active.tagName === "TEXTAREA") &&
+      typeof active.selectionStart === "number" &&
+      active.selectionStart !== active.selectionEnd
+    ) {
+      const start = active.selectionStart;
+      const end = active.selectionEnd;
+      const text = active.value.slice(start, end).trim();
+      if (!text) return null;
+      return {
+        text,
+        el: active,
+        start,
+        end,
+        fromField: true,
+        rect: active.getBoundingClientRect(),
+      };
+    }
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    if (range.collapsed) return null;
+
+    const text = sel.toString().trim();
+    if (!text) return null;
+
+    const rect = range.getBoundingClientRect();
+    const el = editableFrom(range.startContainer);
+
+    if ((!rect || (rect.width === 0 && rect.height === 0)) && !el) return null;
+
+    return {
+      text,
+      el,
+      range: range.cloneRange(),
+      fromField: false,
+      rect: rect && rect.width ? rect : el ? el.getBoundingClientRect() : null,
+    };
+  }
+
+  /* ── Печать у выделения ────────────────────────────────────────────────── */
+
+  function hideSeal() {
+    if (state.seal && state.seal.parentNode) state.seal.remove();
+    state.seal = null;
+  }
+
+  async function showSeal(saved) {
+    if (!saved || !saved.rect) return;
+    hideSeal();
+
+    const shadow = await ensureHost();
+    if (!state.host || !state.host.isConnected) return;
+
+    const seal = document.createElement("button");
+    seal.className = "ct-seal";
+    seal.type = "button";
+    seal.title = "Перевести выделенное";
+    seal.setAttribute("aria-label", "Перевести выделенное");
+    seal.textContent = "译";
+    // mousedown гасим: иначе браузер снимет выделение раньше, чем случится клик.
+    seal.addEventListener("mousedown", (e) => e.preventDefault());
+    seal.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const keep = state.saved;
+      hideSeal();
+      if (keep) void runTranslate(keep, "auto");
+    });
+
+    const rect = saved.rect;
+    const size = 26;
+    let left;
+    let top;
+
+    if (saved.fromField) {
+      left = Math.min(window.innerWidth - size - 8, Math.max(8, rect.right - size - 8));
+      top = Math.max(8, rect.top + 6);
+    } else {
+      left = Math.min(
+        window.innerWidth - size - 8,
+        Math.max(8, rect.left + rect.width / 2 - size / 2),
+      );
+      top = Math.max(8, rect.top - size - 6);
+    }
+
+    seal.style.left = `${Math.round(left)}px`;
+    seal.style.top = `${Math.round(top)}px`;
+    shadow.appendChild(seal);
+    state.seal = seal;
+  }
+
+  /* ── Карточка ──────────────────────────────────────────────────────────── */
+
+  function hideCard() {
+    if (state.card && state.card.parentNode) state.card.remove();
+    state.card = null;
+    // Разговор с Евой не переживает карточку: новый перевод — новый разговор.
+    state.evaMessages = [];
+    state.evaLog = null;
+    state.evaSink = null;
+    state.evaBusy = false;
+    state.cardHeight = 0;
+  }
+
+  /** Пиньинь посимвольно, с классом тона на каждом слоге. */
+  function pinyinNodes(text) {
+    const pp = window.pinyinPro;
+    if (!pp || typeof pp.pinyin !== "function") return null;
+
+    let items;
+    try {
+      items = pp.pinyin(text, { type: "all" });
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(items) || items.length === 0) return null;
+
+    const frag = document.createDocumentFragment();
+    let afterSyllable = false;
+    for (const item of items) {
+      if (!item) continue;
+      if (!item.isZh) {
+        // Пробел перед знаком препинания — «nǐ hǎo ,» — выглядит как ошибка.
+        // Снимаем его, если предыдущим был слог, и только тогда.
+        if (afterSyllable && frag.lastChild && frag.lastChild.nodeType === 3) {
+          frag.lastChild.textContent = frag.lastChild.textContent.replace(/\s+$/, "");
+        }
+        frag.appendChild(document.createTextNode(item.origin || ""));
+        afterSyllable = false;
+        continue;
+      }
+      const span = document.createElement("span");
+      span.className = `t${item.num || 5}`;
+      span.textContent = item.pinyin || item.origin || "";
+      frag.appendChild(span);
+      frag.appendChild(document.createTextNode(" "));
+      afterSyllable = true;
+    }
+    if (afterSyllable && frag.lastChild && frag.lastChild.nodeType === 3) {
+      frag.lastChild.textContent = frag.lastChild.textContent.replace(/\s+$/, "");
+    }
+    return frag;
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function positionCard(card, rect) {
+    // Сначала примеряем над выделением, не влезает — под ним.
+    const gap = 8;
+    card.style.visibility = "hidden";
+    card.style.left = "0px";
+    card.style.top = "0px";
+
+    const box = card.getBoundingClientRect();
+    const width = box.width || 300;
+    const height = box.height || 120;
+
+    let left = rect ? rect.left : 40;
+    let top = rect ? rect.top - height - gap : 80;
+
+    if (top < 8) top = rect ? rect.bottom + gap : 80;
+    left = Math.min(Math.max(8, left), Math.max(8, window.innerWidth - width - 8));
+    top = Math.min(Math.max(8, top), Math.max(8, window.innerHeight - height - 8));
+
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(top)}px`;
+    card.style.visibility = "visible";
+    state.cardHeight = Math.round(height);
+  }
+
+  /**
+   * Карточка выросла уже после расстановки — например, Ева дописала ответ.
+   * Тогда прежний `top` оставляет её нижний край за экраном, поэтому место
+   * пересчитываем. Дёргаем только при заметном изменении высоты, иначе
+   * карточка прыгала бы на каждом куске текста.
+   */
+  let reflowQueued = false;
+  function reflowCard() {
+    if (reflowQueued) return;
+    reflowQueued = true;
+    requestAnimationFrame(() => {
+      reflowQueued = false;
+      const card = state.card;
+      if (!card || !card.isConnected) return;
+      const height = Math.round(card.getBoundingClientRect().height);
+      if (Math.abs(height - state.cardHeight) < 4) return;
+      positionCard(card, state.lastRect);
+    });
+  }
+
+  async function mountCard(saved) {
+    const shadow = await ensureHost();
+    if (!state.host || !state.host.isConnected) return null;
+
+    hideCard();
+    const card = el("div", "ct-card");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "Перевод");
+    // Клики внутри карточки не должны уходить странице (чаты любят глобальные
+    // обработчики, которые закрывают панели и сбрасывают фокус).
+    card.addEventListener("mousedown", (e) => e.stopPropagation());
+    card.addEventListener("click", (e) => e.stopPropagation());
+
+    shadow.appendChild(card);
+    state.card = card;
+    state.lastRect = saved && saved.rect ? saved.rect : null;
+    return card;
+  }
+
+  function head(card, label) {
+    const headNode = el("div", "ct-head");
+    headNode.appendChild(el("span", "ct-label", label));
+    const close = el("button", "ct-close", "×");
+    close.type = "button";
+    close.title = "Закрыть";
+    close.addEventListener("click", () => {
+      hideCard();
+      hideSeal();
+    });
+    headNode.appendChild(close);
+    card.appendChild(headNode);
+    return headNode;
+  }
+
+  function busyCard(card, label) {
+    head(card, label);
+    const body = el("div", "ct-note");
+    const row = el("div", "ct-busy");
+    row.appendChild(el("span", "ct-dot"));
+    row.appendChild(el("span", null, "перевожу…"));
+    body.appendChild(row);
+    card.appendChild(body);
+  }
+
+  function noteCard(card, label, text, link) {
+    // В карточке уже может висеть «перевожу…» — заменяем, а не дописываем.
+    card.replaceChildren();
+    head(card, label);
+    const body = el("div", "ct-note");
+    body.appendChild(el("div", null, text));
+    if (link) {
+      const a = el("div", "ct-link", link.label);
+      a.style.marginTop = "8px";
+      a.addEventListener("click", () => {
+        window.open(link.href, "_blank", "noopener");
+      });
+      body.appendChild(a);
+    }
+    card.appendChild(body);
+  }
+
+  function buildResult(card, saved, result) {
+    const isZhTarget = result.direction === "ru-zh";
+    const label = isZhTarget ? "русский → 中文" : "中文 → русский";
+
+    // В карточке уже может висеть «перевожу…» — заменяем, а не дописываем.
+    card.replaceChildren();
+    head(card, label);
+
+    const body = el("div", "ct-body");
+
+    const primary = el("div", "ct-primary", result.dst);
+    primary.dataset.lang = isZhTarget ? "zh" : "ru";
+    body.appendChild(primary);
+
+    // Пиньинь всегда от китайской стороны: для RU→ZH это перевод,
+    // для ZH→RU — исходник. Считает библиотека, а не модель: она не врёт в тонах.
+    const zhText = isZhTarget ? result.dst : result.src;
+    if (CJK.test(zhText)) {
+      const nodes = pinyinNodes(zhText);
+      if (nodes) {
+        const pinyin = el("div", "ct-pinyin");
+        pinyin.appendChild(nodes);
+        body.appendChild(pinyin);
+      }
+    }
+
+    if (result.src && result.src !== result.dst) {
+      const source = el("div", "ct-source", result.src);
+      source.dataset.lang = CJK.test(result.src) ? "zh" : "ru";
+      body.appendChild(source);
+    }
+
+    card.appendChild(body);
+
+    const actions = el("div", "ct-actions");
+
+    const canInsert = Boolean(saved && saved.el && saved.el.isConnected);
+    if (canInsert) {
+      const insert = el("button", "ct-btn ct-btn-primary", "Вставить");
+      insert.type = "button";
+      insert.addEventListener("mousedown", (e) => e.preventDefault());
+      insert.addEventListener("click", () => {
+        const done = insertText(result.dst, saved);
+        if (done.ok) {
+          insert.textContent = "Готово";
+          insert.disabled = true;
+          setTimeout(() => hideCard(), 700);
+        } else {
+          insert.textContent = "Не вышло";
+          insert.disabled = true;
+          copyText(result.dst);
+          setTimeout(() => {
+            insert.textContent = "Скопировано";
+          }, 600);
+        }
+      });
+      actions.appendChild(insert);
+    }
+
+    const copy = el("button", "ct-btn", "Копировать");
+    copy.type = "button";
+    copy.addEventListener("mousedown", (e) => e.preventDefault());
+    copy.addEventListener("click", () => {
+      copyText(result.dst);
+      copy.textContent = "Скопировано";
+      setTimeout(() => {
+        copy.textContent = "Копировать";
+      }, 1200);
+    });
+    actions.appendChild(copy);
+
+    const speak = el("button", "ct-btn ct-btn-icon", "♪");
+    speak.type = "button";
+    speak.title = "Озвучить";
+    speak.setAttribute("aria-label", "Озвучить");
+    speak.addEventListener("mousedown", (e) => e.preventDefault());
+    speak.addEventListener("click", () => {
+      speak.disabled = true;
+      speakText(zhText).finally(() => {
+        speak.disabled = false;
+      });
+    });
+    actions.appendChild(speak);
+
+    card.appendChild(actions);
+    evaBlock(card, saved);
+    positionCard(card, saved && saved.rect);
+  }
+
+  /* ── Ева ───────────────────────────────────────────────────────────────── */
+
+  /**
+   * Блок Евы в карточке: аватарка, готовые вопросы и поле для своего.
+   *
+   * Вопрос уходит в `/api/eva` с `mode: "teacher"` — это «Лаоши»: развёрнутое
+   * объяснение по-русски с примерами, а не перевод. Первый вопрос несёт сам
+   * выделенный текст, дальше история копится в `state.evaMessages` и уезжает
+   * на сервер целиком, поэтому Ева помнит, о чём уже говорили.
+   */
+  function evaBlock(card, saved) {
+    const wrap = el("div", "ct-eva");
+
+    const top = el("div", "ct-eva-top");
+    const face = document.createElement("img");
+    face.className = "ct-eva-face";
+    face.src = chrome.runtime.getURL("eva/eva.jpg");
+    face.alt = "Ева";
+    face.draggable = false;
+    top.appendChild(face);
+
+    const who = el("div", "ct-eva-who");
+    who.appendChild(el("span", "ct-eva-name", "Ева"));
+    who.appendChild(el("span", "ct-eva-role", "учитель китайского"));
+    top.appendChild(who);
+    wrap.appendChild(top);
+
+    const chips = el("div", "ct-eva-chips");
+    for (const preset of ["Почему так написано?", "Разбери по словам", "Как это произносится?"]) {
+      const chip = el("button", "ct-chip", preset);
+      chip.type = "button";
+      // mousedown гасим, иначе поле ввода теряет выделение и каретку.
+      chip.addEventListener("mousedown", (e) => e.preventDefault());
+      chip.addEventListener("click", () => evaAsk(saved, preset));
+      chips.appendChild(chip);
+    }
+    wrap.appendChild(chips);
+
+    const form = el("form", "ct-eva-form");
+    const input = document.createElement("input");
+    input.className = "ct-eva-input";
+    input.type = "text";
+    input.placeholder = "Свой вопрос про этот текст…";
+    // У чатов свои горячие клавиши — из поля Евы они уезжать не должны.
+    input.addEventListener("keydown", (e) => e.stopPropagation());
+    form.appendChild(input);
+
+    const send = el("button", "ct-eva-send", "→");
+    send.type = "submit";
+    send.title = "Спросить Еву";
+    send.setAttribute("aria-label", "Спросить Еву");
+    form.appendChild(send);
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+      input.value = "";
+      evaAsk(saved, question);
+    });
+    wrap.appendChild(form);
+
+    const log = el("div", "ct-eva-log");
+    log.hidden = true;
+    wrap.appendChild(log);
+
+    state.evaLog = log;
+    card.dataset.view = "eva";
+    card.appendChild(wrap);
+    reflowCard();
+  }
+
+  /** Задать вопрос: реплика в лог, запрос в службу, ответ приедет кусками. */
+  function evaAsk(saved, question) {
+    const log = state.evaLog;
+    if (!log || state.evaBusy) return;
+
+    const source = (saved && saved.text ? saved.text : "").trim();
+    const first = state.evaMessages.length === 0;
+    const content = first && source ? `Текст: «${source}»\n\nВопрос: ${question}` : question;
+    state.evaMessages.push({ role: "user", content });
+
+    log.hidden = false;
+    const questionNode = el("div", "ct-eva-q", question);
+    log.appendChild(questionNode);
+
+    const answer = el("div", "ct-eva-a");
+    const busy = el("div", "ct-busy");
+    busy.appendChild(el("span", "ct-dot"));
+    busy.appendChild(el("span", null, "Ева думает…"));
+    answer.appendChild(busy);
+    log.appendChild(answer);
+    log.scrollTop = log.scrollHeight;
+    reflowCard();
+
+    const reqId = `eva-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    state.evaBusy = true;
+    state.evaSink = { reqId, answer, busy, text: null, acc: "", log, question: questionNode };
+
+    chrome.runtime
+      .sendMessage({ type: "ct:eva-ask", reqId, messages: state.evaMessages })
+      .then(
+        (res) => {
+          if (res && res.ok) return; // дальше только куски ответа
+          evaFail((res && res.message) || "Ева не ответила.", res && res.code);
+        },
+        () => evaFail("Расширение перезагружено — обновите страницу.", "CONTEXT"),
+      );
+  }
+
+  function evaAppend(chunk) {
+    const sink = state.evaSink;
+    if (!sink || !chunk) return;
+    if (sink.busy && sink.busy.parentNode) sink.busy.remove();
+    if (!sink.text) {
+      sink.text = el("div", "ct-eva-a-text");
+      sink.answer.appendChild(sink.text);
+    }
+    sink.acc += chunk;
+    sink.text.textContent = sink.acc;
+    sink.log.scrollTop = sink.log.scrollHeight;
+    reflowCard();
+  }
+
+  function evaFinish() {
+    const sink = state.evaSink;
+    if (!sink) return;
+    if (sink.busy && sink.busy.parentNode) sink.busy.remove();
+
+    const answer = sink.acc.trim();
+    if (answer) {
+      state.evaMessages.push({ role: "assistant", content: answer });
+    } else {
+      state.evaMessages.pop();
+      sink.answer.appendChild(el("div", "ct-eva-err", "Пустой ответ — попробуйте ещё раз."));
+    }
+    state.evaBusy = false;
+    state.evaSink = null;
+
+    // Пока текста не было, лог листался вниз вслед за ответом. Теперь ответ
+    // дописан — возвращаемся к началу, иначе объяснение открывается с середины.
+    if (sink.question && sink.log) {
+      const offset = sink.question.offsetTop - sink.log.offsetTop;
+      if (Number.isFinite(offset)) sink.log.scrollTop = Math.max(0, offset);
+    }
+    reflowCard();
+  }
+
+  function evaFail(message, code) {
+    const sink = state.evaSink;
+    if (!sink) return;
+    if (sink.busy && sink.busy.parentNode) sink.busy.remove();
+
+    // Оборвались на середине — часть ответа уже полезна, оставляем её.
+    const partial = sink.acc.trim();
+    if (partial) state.evaMessages.push({ role: "assistant", content: partial });
+    else state.evaMessages.pop();
+
+    sink.answer.appendChild(el("div", "ct-eva-err", message));
+    if (code === "AUTH") {
+      const link = el("div", "ct-eva-link", "Войти на honglong.nexusbots.ru");
+      link.addEventListener("click", () => {
+        window.open("https://honglong.nexusbots.ru/login", "_blank", "noopener");
+      });
+      sink.answer.appendChild(link);
+    }
+    sink.log.scrollTop = sink.log.scrollHeight;
+
+    state.evaBusy = false;
+    state.evaSink = null;
+    reflowCard();
+  }
+
+  /* ── Перевод ───────────────────────────────────────────────────────────── */
+
+  async function runTranslate(saved, direction) {
+    if (!saved || state.busy) return;
+    state.saved = saved;
+    state.busy = true;
+
+    const dir =
+      direction === "auto" || !direction ? (CJK.test(saved.text) ? "zh-ru" : "ru-zh") : direction;
+
+    const card = await mountCard(saved);
+    if (!card) {
+      state.busy = false;
+      return;
+    }
+    busyCard(card, dir === "ru-zh" ? "русский → 中文" : "中文 → русский");
+
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: "ct:translate",
+        text: saved.text,
+        direction: dir,
+      });
+    } catch (err) {
+      response = { ok: false, code: "CONTEXT", message: "Расширение перезагружено — обновите страницу." };
+    }
+
+    state.busy = false;
+    if (!state.card) return; // карточку успели закрыть
+
+    if (!response || !response.ok) {
+      const message = (response && response.message) || "Перевод недоступен.";
+      noteCard(
+        state.card,
+        dir === "ru-zh" ? "русский → 中文" : "中文 → русский",
+        message,
+        response && response.code === "AUTH"
+          ? { label: "Открыть honglong.nexusbots.ru", href: "https://honglong.nexusbots.ru/login" }
+          : null,
+      );
+      positionCard(state.card, saved.rect);
+      return;
+    }
+
+    buildResult(state.card, saved, response.result);
+  }
+
+  /* ── Вставка ───────────────────────────────────────────────────────────── */
+
+  function insertText(text, saved) {
+    const target = saved && saved.el;
+    if (!target || !target.isConnected) return { ok: false, reason: "detached" };
+
+    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+      return insertIntoField(target, saved, text);
+    }
+    if (target.isContentEditable) {
+      return insertIntoEditable(target, saved, text);
+    }
+    return { ok: false, reason: "not-editable" };
+  }
+
+  function insertIntoField(field, saved, text) {
+    field.focus();
+
+    const proto =
+      field.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+
+    const value = field.value;
+    const start = typeof saved.start === "number" ? saved.start : value.length;
+    const end = typeof saved.end === "number" ? saved.end : start;
+    const next = value.slice(0, start) + text + value.slice(end);
+
+    // Нативный сеттер обходит React-трекер значения: иначе onChange не увидит
+    // подмены и поле «откатится» на следующем рендере.
+    if (setter) setter.call(field, next);
+    else field.value = next;
+
+    const caret = start + text.length;
+    try {
+      field.selectionStart = caret;
+      field.selectionEnd = caret;
+    } catch {
+      /* некоторые типы input не поддерживают выделение */
+    }
+
+    field.dispatchEvent(
+      new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: text }),
+    );
+    return { ok: true };
+  }
+
+  function insertIntoEditable(editor, saved, text) {
+    editor.focus();
+
+    const sel = window.getSelection();
+    if (saved.range && sel) {
+      try {
+        sel.removeAllRanges();
+        sel.addRange(saved.range);
+      } catch {
+        /* Range мог устареть после перерисовки редактора */
+      }
+    }
+
+    // Основной путь: настоящий insertText. Редакторы на contenteditable
+    // (Telegram Web, Discord, WhatsApp) слушают beforeinput и применяют
+    // изменение к своей модели, а браузер сохраняет нативный undo.
+    let ok = false;
+    try {
+      ok = document.execCommand("insertText", false, text);
+    } catch {
+      ok = false;
+    }
+    if (ok) return { ok: true };
+
+    // Запасной путь: правим Range руками и сообщаем об изменении событием.
+    try {
+      const range = saved.range ? saved.range.cloneRange() : null;
+      if (!range) return { ok: false, reason: "no-range" };
+
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      editor.dispatchEvent(
+        new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
+      );
+      return { ok: true, fallback: true };
+    } catch {
+      return { ok: false, reason: "exec" };
+    }
+  }
+
+  /* ── Буфер и звук ──────────────────────────────────────────────────────── */
+
+  function copyText(text) {
+    const done = () => {};
+    try {
+      navigator.clipboard.writeText(text).then(done, () => legacyCopy(text));
+    } catch {
+      legacyCopy(text);
+    }
+  }
+
+  function legacyCopy(text) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.cssText = "position:fixed;top:-1000px;left:-1000px;opacity:0;";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      document.execCommand("copy");
+    } catch {
+      /* остаётся только ручное копирование */
+    }
+    area.remove();
+  }
+
+  async function speakText(text) {
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({ type: "ct:tts", text });
+    } catch {
+      return;
+    }
+    if (!response || !response.ok || !response.audio) return;
+
+    try {
+      const bin = atob(response.audio);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      const audio = new Audio(url);
+      audio.addEventListener("ended", () => URL.revokeObjectURL(url), { once: true });
+      await audio.play();
+    } catch {
+      /* автовоспроизведение могло быть запрещено — молчим */
+    }
+  }
+
+  /* ── Слушатели ─────────────────────────────────────────────────────────── */
+
+  let sealTimer = 0;
+
+  function onMouseUp(event) {
+    if (state.host && event.composedPath && event.composedPath().includes(state.host)) return;
+
+    clearTimeout(sealTimer);
+    // Даём браузеру дорисовать выделение: на mouseup getSelection() ещё
+    // не всегда окончательный (двойной клик по слову).
+    sealTimer = window.setTimeout(() => {
+      const saved = captureSelection();
+      if (!saved) {
+        hideSeal();
+        return;
+      }
+      state.saved = saved;
+      void showSeal(saved);
+    }, 10);
+  }
+
+  function onMouseDown(event) {
+    if (state.host && event.composedPath && event.composedPath().includes(state.host)) return;
+    hideSeal();
+    hideCard();
+  }
+
+  function onScroll(event) {
+    // Прокрутка внутри нашей карточки (лог Евы) — не повод её закрывать.
+    if (state.host && event && event.composedPath && event.composedPath().includes(state.host)) return;
+    hideSeal();
+    hideCard();
+  }
+
+  function onKeyDown(event) {
+    if (event.key === "Escape") {
+      hideSeal();
+      hideCard();
+    }
+  }
+
+  document.addEventListener("mouseup", onMouseUp, true);
+  document.addEventListener("mousedown", onMouseDown, true);
+  document.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("scroll", onScroll, { passive: true, capture: true });
+  window.addEventListener("resize", onScroll, { passive: true });
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg || typeof msg !== "object") return undefined;
+
+    if (msg.type === "ct:eva-chunk" || msg.type === "ct:eva-done" || msg.type === "ct:eva-error") {
+      if (!state.evaSink || msg.reqId !== state.evaSink.reqId) return undefined;
+      if (msg.type === "ct:eva-chunk") evaAppend(String(msg.chunk || ""));
+      else if (msg.type === "ct:eva-done") evaFinish();
+      else evaFail(msg.message || "Ева не ответила.", "UPSTREAM");
+      return undefined;
+    }
+
+    if (msg.type === "ct:menu-translate") {
+      const saved = captureSelection();
+      if (!saved) {
+        sendResponse({ ok: false, reason: "no-selection" });
+        return undefined;
+      }
+      hideSeal();
+      void runTranslate(saved, msg.direction || "auto");
+      sendResponse({ ok: true });
+      return undefined;
+    }
+
+    return undefined;
+  });
+})();

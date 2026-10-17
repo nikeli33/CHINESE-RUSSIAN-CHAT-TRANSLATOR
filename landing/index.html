@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>红龙 Переводчик — перевод прямо в чате</title>
+    <meta
+      name="description"
+      content="Выдели текст в любом чате — получи иероглифы, пиньинь с тонами и озвучку. Вставка обратно в поле ввода. Расширение Chrome для аккаунтов HONGLONG."
+    />
+    <meta name="theme-color" content="#202020" />
+    <style>
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url("fonts/alegreya-sans-latin-400-normal.woff2") format("woff2");
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2212;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url("fonts/alegreya-sans-cyrillic-400-normal.woff2") format("woff2");
+        unicode-range: U+0301, U+0400-045F, U+0490-0491;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 500;
+        font-display: swap;
+        src: url("fonts/alegreya-sans-latin-500-normal.woff2") format("woff2");
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2212;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 500;
+        font-display: swap;
+        src: url("fonts/alegreya-sans-cyrillic-500-normal.woff2") format("woff2");
+        unicode-range: U+0301, U+0400-045F, U+0490-0491;
+      }
+      @font-face {
+        font-family: "Cormorant Garamond";
+        font-style: normal;
+        font-weight: 500;
+        font-display: swap;
+        src: url("fonts/cormorant-garamond-latin-500-normal.woff2") format("woff2");
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F;
+      }
+      @font-face {
+        font-family: "Cormorant Garamond";
+        font-style: normal;
+        font-weight: 500;
+        font-display: swap;
+        src: url("fonts/cormorant-garamond-cyrillic-500-normal.woff2") format("woff2");
+        unicode-range: U+0301, U+0400-045F, U+0490-0491;
+      }
+
+      :root {
+        --ink-950: #0d0d0d;
+        --ink-900: #14161a;
+        --ink-800: #202020;
+        --ink-700: #2a2a2a;
+        --paper: #e2e2e9;
+        --paper-hi: #f4f4f8;
+        --paper-deep: #c9c9d2;
+        --paper-line: rgba(120, 122, 134, 0.28);
+        --ink: #363636;
+        --ink-strong: #2a2a2a;
+        --ink-muted: #7e7e7e;
+        --ink-faint: #a4a4a4;
+        --cta: #9c4141;
+        --cta-hi: #a85858;
+        --cta-lo: #8a3434;
+        --seal: #c61502;
+        --gold: #d8c391;
+        --gold-dim: #b0a078;
+        --bronze: #9c7e5a;
+        --bronze-deep: #6b5530;
+        --tone-1: #3f6fa8;
+        --tone-2: #4a8c5a;
+        --tone-3: #7d5a9c;
+        --tone-4: #a84a42;
+        --tone-5: #8a8a8a;
+        --font-sans: "Alegreya Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+        --font-display: "Cormorant Garamond", "Noto Serif SC", Georgia, serif;
+        --font-hanzi: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun",
+          "Microsoft YaHei", serif;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        font-size: 17px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .wrap {
+        width: min(1080px, calc(100% - 48px));
+        margin: 0 auto;
+      }
+
+      /* ── Тёмное полотно ──────────────────────────────────────────────── */
+
+      .ink {
+        position: relative;
+        background: var(--ink-800);
+        color: var(--gold);
+        overflow: hidden;
+      }
+
+      .ink::before {
+        content: "译";
+        position: absolute;
+        right: -4%;
+        top: -14%;
+        font-family: var(--font-hanzi);
+        font-size: clamp(280px, 42vw, 560px);
+        line-height: 1;
+        color: rgba(216, 195, 145, 0.05);
+        pointer-events: none;
+        user-select: none;
+      }
+
+      .hero {
+        position: relative;
+        padding: 72px 0 84px;
+        border-bottom: 1px solid rgba(216, 195, 145, 0.22);
+      }
+
+      .mark {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        background: var(--seal);
+        color: #fdf7ee;
+        font-family: var(--font-hanzi);
+        font-size: 26px;
+        line-height: 1;
+        border-radius: 2px;
+        margin-bottom: 26px;
+      }
+
+      .eyebrow {
+        margin: 0 0 18px;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: rgba(216, 195, 145, 0.62);
+      }
+
+      h1 {
+        margin: 0 0 20px;
+        font-family: var(--font-display);
+        font-weight: 500;
+        font-size: clamp(38px, 6vw, 68px);
+        line-height: 1.05;
+        letter-spacing: -0.01em;
+        color: var(--gold);
+        max-width: 16ch;
+      }
+
+      .lede {
+        margin: 0 0 34px;
+        max-width: 54ch;
+        font-size: 18px;
+        line-height: 1.62;
+        color: rgba(216, 195, 145, 0.78);
+      }
+
+      .cta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 46px;
+        padding: 0 26px;
+        background: var(--cta);
+        border: 1px solid var(--cta-lo);
+        border-radius: 2px;
+        color: #fdf7ee;
+        font-size: 15px;
+        font-weight: 500;
+        letter-spacing: 0.03em;
+        text-decoration: none;
+        transition: background 120ms linear, border-color 120ms linear;
+      }
+
+      .btn:hover {
+        background: var(--cta-hi);
+        border-color: var(--cta);
+      }
+
+      .btn-ghost {
+        background: transparent;
+        border-color: rgba(216, 195, 145, 0.34);
+        color: var(--gold);
+      }
+
+      .btn-ghost:hover {
+        background: rgba(216, 195, 145, 0.08);
+        border-color: rgba(216, 195, 145, 0.55);
+      }
+
+      .hero-note {
+        margin: 22px 0 0;
+        font-size: 13px;
+        color: rgba(216, 195, 145, 0.5);
+      }
+
+      /* ── Бумажные секции ─────────────────────────────────────────────── */
+
+      section.paper {
+        padding: 76px 0;
+        border-bottom: 1px solid var(--paper-line);
+      }
+
+      .label {
+        margin: 0 0 12px;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--bronze-deep);
+      }
+
+      h2 {
+        margin: 0 0 34px;
+        font-family: var(--font-display);
+        font-weight: 500;
+        font-size: clamp(28px, 3.6vw, 40px);
+        line-height: 1.15;
+        color: var(--ink-strong);
+        max-width: 24ch;
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 28px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+
+      .steps li {
+        counter-increment: step;
+        position: relative;
+        padding-top: 20px;
+        border-top: 1px solid var(--paper-line);
+      }
+
+      .steps li::before {
+        content: counter(step, decimal-leading-zero);
+        display: block;
+        font-family: var(--font-display);
+        font-size: 13px;
+        letter-spacing: 0.16em;
+        color: var(--seal);
+        margin-bottom: 8px;
+      }
+
+      .steps strong {
+        display: block;
+        font-weight: 500;
+        font-size: 17px;
+        color: var(--ink-strong);
+        margin-bottom: 6px;
+      }
+
+      .steps span {
+        color: var(--ink-muted);
+        font-size: 15px;
+      }
+
+      .seal-chip {
+        display: inline-grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        background: var(--seal);
+        color: #fdf7ee;
+        font-family: var(--font-hanzi);
+        font-size: 13px;
+        border-radius: 2px;
+        vertical-align: -4px;
+      }
+
+      /* ── Карточки направлений ────────────────────────────────────────── */
+
+      .dirs {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+      }
+
+      .dir {
+        background: var(--paper-hi);
+        border: 1px solid var(--paper-line);
+        border-radius: 3px;
+        padding: 24px;
+      }
+
+      .dir-label {
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--bronze-deep);
+        margin-bottom: 16px;
+      }
+
+      .zh {
+        font-family: var(--font-hanzi);
+        font-size: 26px;
+        line-height: 1.4;
+        color: var(--seal);
+        margin: 0 0 10px;
+      }
+
+      .pinyin {
+        font-size: 14px;
+        line-height: 1.7;
+        margin: 0 0 14px;
+      }
+
+      .t1 { color: var(--tone-1); }
+      .t2 { color: var(--tone-2); }
+      .t3 { color: var(--tone-3); }
+      .t4 { color: var(--tone-4); }
+      .t5 { color: var(--tone-5); }
+
+      .ru {
+        font-size: 17px;
+        line-height: 1.55;
+        color: var(--ink-strong);
+        margin: 0;
+        padding-top: 14px;
+        border-top: 1px solid var(--paper-line);
+      }
+
+      .dir-note {
+        margin: 14px 0 0;
+        font-size: 13.5px;
+        color: var(--ink-muted);
+      }
+
+      /* ── Установка ───────────────────────────────────────────────────── */
+
+      .install {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: inst;
+        max-width: 62ch;
+      }
+
+      .install li {
+        counter-increment: inst;
+        position: relative;
+        padding: 14px 0 14px 46px;
+        border-bottom: 1px solid var(--paper-line);
+        color: var(--ink);
+        font-size: 16px;
+      }
+
+      .install li:last-child {
+        border-bottom: 0;
+      }
+
+      .install li::before {
+        content: counter(inst);
+        position: absolute;
+        left: 0;
+        top: 14px;
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--paper-deep);
+        border-radius: 2px;
+        font-size: 12px;
+        color: var(--ink-muted);
+      }
+
+      code {
+        font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+        font-size: 0.9em;
+        background: var(--paper-hi);
+        border: 1px solid var(--paper-line);
+        border-radius: 2px;
+        padding: 1px 5px;
+        color: var(--ink-strong);
+      }
+
+      .ink code {
+        background: rgba(216, 195, 145, 0.1);
+        border-color: rgba(216, 195, 145, 0.28);
+        color: var(--gold);
+      }
+
+      /* ── Подвал ──────────────────────────────────────────────────────── */
+
+      footer {
+        background: var(--ink-950);
+        color: rgba(216, 195, 145, 0.55);
+        padding: 40px 0;
+        font-size: 13px;
+      }
+
+      .foot {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+
+      footer a {
+        color: var(--gold-dim);
+        text-decoration: none;
+        border-bottom: 1px solid rgba(216, 195, 145, 0.24);
+      }
+
+      footer a:hover {
+        color: var(--gold);
+        border-color: rgba(216, 195, 145, 0.6);
+      }
+
+      @media (max-width: 640px) {
+        .hero {
+          padding: 52px 0 60px;
+        }
+        section.paper {
+          padding: 56px 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="ink">
+      <div class="wrap hero">
+        <div class="mark">译</div>
+        <p class="eyebrow">红龙 · HONGLONG</p>
+        <h1>Перевод прямо в&nbsp;чате</h1>
+        <p class="lede">
+          Выделите фразу в поле ввода — рядом появится печать. Один клик: иероглифы,
+          пиньинь с тонами, озвучка. Ещё один — и китайский текст стоит на месте
+          русского.
+        </p>
+        <div class="cta">
+          <!-- Замените ссылку на свой репозиторий -->
+          <a class="btn" href="https://github.com/nikeli33/CHINESE-RUSSIAN-CHAT-TRANSLATOR">Скачать с GitHub</a>
+          <a class="btn btn-ghost" href="https://honglong.nexusbots.ru">Сайт HONGLONG</a>
+        </div>
+        <p class="hero-note">
+          Нужен аккаунт HONGLONG. Магазина нет: расширение ставится распакованным.
+        </p>
+      </div>
+    </header>
+
+    <main>
+      <section class="paper">
+        <div class="wrap">
+          <p class="label">Один сценарий</p>
+          <h2>Выделил, нажал, вставил</h2>
+          <ol class="steps">
+            <li>
+              <strong>Выделение</strong>
+              <span>Любой текст в поле ввода или в переписке. Печать <span class="seal-chip">译</span> появляется сама.</span>
+            </li>
+            <li>
+              <strong>Карточка</strong>
+              <span>Иероглифы киноварью, пиньинь по слогам — каждый тон своим цветом.</span>
+            </li>
+            <li>
+              <strong>Вставка</strong>
+              <span>Текст заменяет выделенное прямо в редакторе. Undo работает: Ctrl+Z вернёт русский.</span>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="ink">
+        <div class="wrap" style="padding: 76px 0">
+          <p class="label" style="color: rgba(216, 195, 145, 0.55)">Два направления</p>
+          <h2 style="color: var(--gold)">Писать и читать</h2>
+          <div class="dirs">
+            <article class="dir">
+              <div class="dir-label">русский → 中文</div>
+              <p class="zh">你好，最近怎么样？</p>
+              <p class="pinyin">
+                <span class="t3">nǐ</span> <span class="t3">hǎo</span><span class="t5">,</span>
+                <span class="t4">zuì</span> <span class="t4">jìn</span>
+                <span class="t3">zěn</span> <span class="t5">me</span>
+                <span class="t4">yàng</span><span class="t5">?</span>
+              </p>
+              <p class="ru">Привет, как дела?</p>
+              <p class="dir-note">Для своих реплик: заменить черновик на китайский.</p>
+            </article>
+            <article class="dir">
+              <div class="dir-label">中文 → русский</div>
+              <p class="zh">我们明天见吧</p>
+              <p class="pinyin">
+                <span class="t3">wǒ</span> <span class="t5">men</span>
+                <span class="t2">míng</span> <span class="t1">tiān</span>
+                <span class="t4">jiàn</span> <span class="t5">ba</span>
+              </p>
+              <p class="ru">Давай встретимся завтра.</p>
+              <p class="dir-note">Для чужих: понять, что написали, и услышать, как это звучит.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="paper">
+        <div class="wrap">
+          <p class="label">Установка</p>
+          <h2>Пять шагов, без магазина</h2>
+          <ol class="install">
+            <li>Скачайте репозиторий: <code>Code → Download ZIP</code> и распакуйте.</li>
+            <li>Откройте <code>chrome://extensions</code>.</li>
+            <li>Включите «Режим разработчика» справа сверху.</li>
+            <li>«Загрузить распакованное расширение» → папка <code>extension</code>.</li>
+            <li>Войдите на <a href="https://honglong.nexusbots.ru/login">honglong.nexusbots.ru</a> — перевод работает только для аккаунтов.</li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="ink">
+        <div class="wrap" style="padding: 64px 0">
+          <p class="label" style="color: rgba(216, 195, 145, 0.55)">Честно</p>
+          <h2 style="color: var(--gold); max-width: 30ch">Что не работает</h2>
+          <p class="lede" style="margin-bottom: 0">
+            Telegram Desktop не поддерживается: расширение живёт в браузере и работает
+            с DOM страницы, а в нативное приложение текст так не вставить. Замена
+            текста зависит от редактора чата — если он игнорирует вставку, карточка
+            положит перевод в буфер. Лимиты те же, что у сайта: суточная квота на
+            аккаунт.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
+        <span>红龙 Переводчик · v0.1.0</span>
+        <span>
+          <a href="https://honglong.nexusbots.ru">honglong.nexusbots.ru</a>
+          &nbsp;·&nbsp; MIT
+        </span>
+      </div>
+    </footer>
+  </body>
+</html>

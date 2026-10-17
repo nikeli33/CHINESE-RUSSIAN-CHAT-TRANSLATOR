@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# бинарники не трогаем: иначе git пытается считать строки в шрифтах и картинках
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.woff2 binary
+*.ico binary

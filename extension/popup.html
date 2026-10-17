@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>红龙 Переводчик</title>
+    <style>
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 400;
+        src: url("fonts/alegreya-sans-latin-400-normal.woff2") format("woff2");
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2212;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 400;
+        src: url("fonts/alegreya-sans-cyrillic-400-normal.woff2") format("woff2");
+        unicode-range: U+0301, U+0400-045F, U+0490-0491;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 500;
+        src: url("fonts/alegreya-sans-latin-500-normal.woff2") format("woff2");
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F, U+20AC, U+2212;
+      }
+      @font-face {
+        font-family: "Alegreya Sans";
+        font-style: normal;
+        font-weight: 500;
+        src: url("fonts/alegreya-sans-cyrillic-500-normal.woff2") format("woff2");
+        unicode-range: U+0301, U+0400-045F, U+0490-0491;
+      }
+      @font-face {
+        font-family: "Cormorant Garamond";
+        font-style: normal;
+        font-weight: 500;
+        src: url("fonts/cormorant-garamond-cyrillic-500-normal.woff2") format("woff2");
+        unicode-range: U+0301, U+0400-045F, U+0490-0491;
+      }
+      @font-face {
+        font-family: "Cormorant Garamond";
+        font-style: normal;
+        font-weight: 500;
+        src: url("fonts/cormorant-garamond-latin-500-normal.woff2") format("woff2");
+        unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+2000-206F;
+      }
+
+      :root {
+        --ink-950: #0d0d0d;
+        --ink-800: #202020;
+        --paper: #e2e2e9;
+        --paper-hi: #f4f4f8;
+        --paper-deep: #c9c9d2;
+        --paper-line: rgba(120, 122, 134, 0.28);
+        --ink: #363636;
+        --ink-strong: #2a2a2a;
+        --ink-muted: #7e7e7e;
+        --ink-faint: #a4a4a4;
+        --cta: #9c4141;
+        --cta-hi: #a85858;
+        --cta-lo: #8a3434;
+        --seal: #c61502;
+        --gold: #d8c391;
+        --bronze-deep: #6b5530;
+        --font-sans: "Alegreya Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+        --font-display: "Cormorant Garamond", Georgia, serif;
+        --font-hanzi: "Noto Serif SC", "SimSun", "Microsoft YaHei", serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        width: 300px;
+        margin: 0;
+        background: var(--paper-hi);
+        color: var(--ink);
+        font-family: var(--font-sans);
+        font-size: 13px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        background: var(--ink-800);
+        border-bottom: 1px solid var(--bronze-deep);
+      }
+
+      .mark {
+        flex: none;
+        width: 26px;
+        height: 26px;
+        display: grid;
+        place-items: center;
+        background: var(--seal);
+        color: #fdf7ee;
+        font-family: var(--font-hanzi);
+        font-size: 15px;
+        line-height: 1;
+        border-radius: 2px;
+      }
+
+      .title {
+        font-family: var(--font-display);
+        font-size: 16px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        color: var(--gold);
+        line-height: 1.1;
+      }
+
+      .subtitle {
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(216, 195, 145, 0.62);
+      }
+
+      section {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--paper-line);
+      }
+
+      section:last-of-type {
+        border-bottom: 0;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .label {
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--bronze-deep);
+      }
+
+      .value {
+        font-size: 13px;
+        color: var(--ink-strong);
+        overflow-wrap: anywhere;
+      }
+
+      .muted {
+        color: var(--ink-muted);
+        font-size: 12px;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--ink-faint);
+      }
+
+      .dot[data-state="ok"] {
+        background: #3f7a4e;
+      }
+
+      .dot[data-state="wait"] {
+        background: #a8762a;
+      }
+
+      .dot[data-state="bad"] {
+        background: #b3372f;
+      }
+
+      button {
+        height: 30px;
+        padding: 0 12px;
+        background: transparent;
+        border: 1px solid var(--paper-line);
+        border-radius: 2px;
+        color: var(--ink-strong);
+        font-family: var(--font-sans);
+        font-size: 12.5px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--paper);
+        border-color: var(--paper-deep);
+      }
+
+      button.primary {
+        background: var(--cta);
+        border-color: var(--cta-lo);
+        color: var(--paper-hi);
+      }
+
+      button.primary:hover {
+        background: var(--cta-hi);
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
+      .steps {
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: step;
+      }
+
+      .steps li {
+        counter-increment: step;
+        display: flex;
+        gap: 8px;
+        font-size: 12.5px;
+        color: var(--ink);
+        padding: 3px 0;
+      }
+
+      .steps li::before {
+        content: counter(step);
+        flex: none;
+        width: 16px;
+        height: 16px;
+        margin-top: 2px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--paper-deep);
+        border-radius: 2px;
+        font-size: 10px;
+        color: var(--ink-muted);
+      }
+
+      .seal-inline {
+        font-family: var(--font-hanzi);
+        color: var(--seal);
+        border: 1px solid var(--seal);
+        border-radius: 2px;
+        padding: 0 3px;
+        font-size: 11px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 6px;
+      }
+
+      .actions button {
+        flex: 1;
+      }
+
+      footer {
+        padding: 8px 14px 10px;
+        font-size: 11px;
+        color: var(--ink-faint);
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      footer a {
+        color: var(--ink-muted);
+        text-decoration: none;
+        border-bottom: 1px solid var(--paper-deep);
+      }
+
+      footer a:hover {
+        color: var(--cta);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="mark">译</div>
+      <div>
+        <div class="title">红龙 Переводчик</div>
+        <div class="subtitle">перевод в чатах</div>
+      </div>
+    </header>
+
+    <section>
+      <div class="row">
+        <span class="label">Аккаунт</span>
+        <span class="status">
+          <span class="dot" id="auth-dot"></span>
+          <span class="muted" id="auth-state">проверяю…</span>
+        </span>
+      </div>
+      <div class="value" id="auth-name" style="margin-top: 4px"></div>
+      <div class="actions" id="auth-actions" style="margin-top: 10px; display: none"></div>
+    </section>
+
+    <section>
+      <div class="row">
+        <span class="label">Мост</span>
+        <span class="muted" id="bridge-state">—</span>
+      </div>
+      <div class="muted" style="margin-top: 4px" id="bridge-note"></div>
+      <div class="actions" style="margin-top: 10px">
+        <button id="bridge-close">Закрыть вкладку-мост</button>
+      </div>
+    </section>
+
+    <section>
+      <span class="label">Как пользоваться</span>
+      <ol class="steps">
+        <li>Выделите текст в любом чате</li>
+        <li>Нажмите <span class="seal-inline">译</span> рядом с выделением</li>
+        <li>Вставьте иероглифы в поле ввода</li>
+      </ol>
+      <div class="muted" style="margin-top: 8px">
+        Или правый клик по выделению → «Перевести».
+      </div>
+    </section>
+
+    <footer>
+      <span>v0.1.0</span>
+      <a href="https://honglong.nexusbots.ru" target="_blank" rel="noopener">honglong.nexusbots.ru</a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
