@@ -15,6 +15,15 @@
  * замена содержимого Range вручную → нативный сеттер value для input/textarea.
  * Первый способ даёт настоящий beforeinput, который понимают Lexical,
  * ProseMirror, Draft и редактор Telegram Web, и сохраняет нативный undo.
+ *
+ * Shadow DOM: часть сайтов (bilibili — комментарии) строит текст в web
+ * component'ах. Там document.getSelection().toString() текст отдаёт, но
+ * getRangeAt(0) возвращает схлопнутый range в host'е — то есть нулевые
+ * координаты. Прежняя проверка «rect пустой и поле не найдено» на этом
+ * сдавалась, и печать не появлялась. Настоящий range живёт в shadow root'е,
+ * и достаётся он через root.getSelection() (нестандартный, но живой метод
+ * Chromium). Если root закрытый — берём хотя бы host, чтобы печать встала
+ * у комментария, а не пропала совсем.
  */
 
 (() => {
@@ -33,6 +42,10 @@
     css: null,
     busy: false,
     lastRect: null,
+    // Путь последнего события мыши. Нужен, чтобы найти shadow root, в котором
+    // лежит выделение: снаружи видно только host, а composedPath знает, куда
+    // именно пришёл клик.
+    path: null,
     // Высота, под которую карточка уже поставлена: по ней понимаем, что она
     // выросла (ответ Евы) и место надо пересчитать.
     cardHeight: 0,
@@ -79,6 +92,14 @@
 
   /* ── Что было выделено ─────────────────────────────────────────────────── */
 
+  /** Родитель, который не спотыкается о границу shadow root. */
+  function parentAcross(node) {
+    if (!node) return null;
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode ? node.getRootNode() : null;
+    return root && root.host ? root.host : null;
+  }
+
   /** Ближайший (самый внешний) редактируемый предок узла. */
   function editableFrom(node) {
     let el = node && node.nodeType === 3 ? node.parentElement : node;
@@ -86,13 +107,94 @@
     while (el && el !== document.documentElement) {
       if (el.isContentEditable) found = el;
       else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return el;
-      el = el.parentElement;
+      el = parentAcross(el);
     }
     return found;
   }
 
+  /**
+   * Настоящий фокус. document.activeElement для поля внутри web component'а
+   * отдаёт host, а не поле, — спускаемся по цепочке shadowRoot.activeElement.
+   */
+  function deepActive() {
+    let el = document.activeElement;
+    for (let i = 0; i < 10; i += 1) {
+      const inner = el && el.shadowRoot && el.shadowRoot.activeElement;
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  /** Цепочка shadow root'ов над узлом, от внутреннего к внешнему. */
+  function rootsAbove(node, out, seen) {
+    let el = node;
+    while (el && el.getRootNode) {
+      const root = el.getRootNode();
+      if (!root || root === document || !root.host) return;
+      if (!seen.has(root)) {
+        seen.add(root);
+        out.push(root);
+      }
+      el = root.host;
+    }
+  }
+
+  /** Кандидаты, где искать выделение: путь события и фокус. */
+  function candidateRoots() {
+    const roots = [];
+    const seen = new Set();
+    for (const node of state.path || []) rootsAbove(node, roots, seen);
+    rootsAbove(deepActive(), roots, seen);
+    return roots;
+  }
+
+  /** Все открытые shadow root'ы страницы — крайняя мера, когда путь не помог. */
+  function allOpenRoots() {
+    const roots = [];
+    for (const el of document.querySelectorAll("*")) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+    }
+    return roots;
+  }
+
+  /** Выделение внутри shadow root'а: текст, range и его координаты. */
+  function selectionInRoot(root) {
+    let sel = null;
+    try {
+      // Нестандартный метод Chromium, но именно он отдаёт range внутри
+      // shadow tree. В других браузерах его нет — тогда просто пропускаем.
+      sel = typeof root.getSelection === "function" ? root.getSelection() : null;
+    } catch {
+      return null;
+    }
+    if (!sel || !sel.rangeCount) return null;
+
+    const range = sel.getRangeAt(0);
+    if (range.collapsed) return null;
+
+    const text = sel.toString().trim();
+    if (!text) return null;
+
+    const box = range.getBoundingClientRect();
+    return { range, text, rect: box && box.width ? box : null };
+  }
+
+  /** Найти выделение в shadow DOM: сначала по известным root'ам, потом перебором. */
+  function shadowSelection() {
+    for (const root of candidateRoots()) {
+      const hit = selectionInRoot(root);
+      if (hit) return hit;
+    }
+    for (const root of allOpenRoots()) {
+      const hit = selectionInRoot(root);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   function captureSelection() {
-    const active = document.activeElement;
+    const active = deepActive();
 
     // Поле ввода: window.getSelection() в input/textarea пуст, а позиции
     // выделения живут в selectionStart/End и переживают потерю фокуса.
@@ -117,22 +219,57 @@
     }
 
     const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return null;
-    const range = sel.getRangeAt(0);
-    if (range.collapsed) return null;
+    if (!sel) return null;
 
-    const text = sel.toString().trim();
+    let range = null;
+    let rect = null;
+    if (sel.rangeCount) {
+      const first = sel.getRangeAt(0);
+      if (!first.collapsed) {
+        range = first;
+        rect = first.getBoundingClientRect();
+      }
+    }
+
+    let text = sel.toString().trim();
+
+    // Внутри shadow root'а Selection текст отдаёт, а Range — схлопнутый в
+    // host'е. Значит range и координаты надо брать из самого shadow root'а.
+    // Перебор root'ов затеваем только когда он осмыслен: текст есть или якорь
+    // стоит на host'е web component'а. Иначе обычный клик без выделения
+    // стоил бы полного обхода DOM.
+    if (!range) {
+      const anchor = sel.anchorNode;
+      const hostEl = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+      if (text || (hostEl && hostEl.shadowRoot)) {
+        const inner = shadowSelection();
+        if (inner) {
+          range = inner.range;
+          rect = inner.rect || rect;
+          if (!text) text = inner.text;
+        }
+      }
+    }
+
     if (!text) return null;
 
-    const rect = range.getBoundingClientRect();
-    const el = editableFrom(range.startContainer);
+    const el = range ? editableFrom(range.startContainer) : null;
+
+    // Закрытый shadow root: range недоступен, но host виден — ставим печать
+    // у него. Лучше приблизительное место, чем никакого.
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      const anchor = sel.anchorNode;
+      const host = anchor && (anchor.nodeType === 1 ? anchor : anchor.parentElement);
+      const box = host ? host.getBoundingClientRect() : null;
+      if (box && box.width) rect = box;
+    }
 
     if ((!rect || (rect.width === 0 && rect.height === 0)) && !el) return null;
 
     return {
       text,
       el,
-      range: range.cloneRange(),
+      range: range ? range.cloneRange() : null,
       fromField: false,
       rect: rect && rect.width ? rect : el ? el.getBoundingClientRect() : null,
     };
@@ -353,6 +490,23 @@
       body.appendChild(a);
     }
     card.appendChild(body);
+  }
+
+  /**
+   * Короткое сообщение в карточке. Нужно там, где раньше не происходило
+   * ровно ничего: правый клик по выделению, которое прочитать не вышло.
+   * Молчание в таком случае выглядит как поломка расширения.
+   */
+  function showNotice(text) {
+    void (async () => {
+      const card = await mountCard({ rect: null });
+      if (!card) return;
+      noteCard(card, "перевод", text);
+      positionCard(card, null);
+      window.setTimeout(() => {
+        if (state.card === card) hideCard();
+      }, 6000);
+    })();
   }
 
   function buildResult(card, saved, result) {
@@ -711,18 +865,45 @@
     return { ok: true };
   }
 
-  function insertIntoEditable(editor, saved, text) {
-    editor.focus();
+  /**
+   * Вернуть выделение на место. Если range живёт в shadow tree, кладём его
+   * в селекшн самого root'а: документный Selection такой range принимает не
+   * всегда, а removeAllRanges() до попытки addRange() оставил бы редактор
+   * вообще без выделения.
+   */
+  function restoreRange(saved) {
+    const range = saved && saved.range;
+    if (!range) return;
 
-    const sel = window.getSelection();
-    if (saved.range && sel) {
+    const root =
+      range.startContainer && range.startContainer.getRootNode
+        ? range.startContainer.getRootNode()
+        : null;
+
+    if (root && root !== document && typeof root.getSelection === "function") {
       try {
-        sel.removeAllRanges();
-        sel.addRange(saved.range);
+        const own = root.getSelection();
+        own.removeAllRanges();
+        own.addRange(range);
+        return;
       } catch {
-        /* Range мог устареть после перерисовки редактора */
+        /* ниже общий путь */
       }
     }
+
+    const sel = window.getSelection();
+    if (!sel) return;
+    try {
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch {
+      /* Range мог устареть после перерисовки редактора */
+    }
+  }
+
+  function insertIntoEditable(editor, saved, text) {
+    editor.focus();
+    restoreRange(saved);
 
     // Основной путь: настоящий insertText. Редакторы на contenteditable
     // (Telegram Web, Discord, WhatsApp) слушают beforeinput и применяют
@@ -746,10 +927,7 @@
       range.setStartAfter(node);
       range.collapse(true);
 
-      if (sel) {
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
+      restoreRange({ range });
       editor.dispatchEvent(
         new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }),
       );
@@ -810,7 +988,13 @@
 
   let sealTimer = 0;
 
+  /** Путь события мыши запоминаем всегда: по нему потом ищем shadow root. */
+  function rememberPath(event) {
+    if (event && typeof event.composedPath === "function") state.path = event.composedPath();
+  }
+
   function onMouseUp(event) {
+    rememberPath(event);
     if (state.host && event.composedPath && event.composedPath().includes(state.host)) return;
 
     clearTimeout(sealTimer);
@@ -828,6 +1012,7 @@
   }
 
   function onMouseDown(event) {
+    rememberPath(event);
     if (state.host && event.composedPath && event.composedPath().includes(state.host)) return;
     hideSeal();
     hideCard();
@@ -867,6 +1052,9 @@
     if (msg.type === "ct:menu-translate") {
       const saved = captureSelection();
       if (!saved) {
+        // Раньше здесь стояла тишина: меню закрывалось, и ничего не
+        // происходило. Хуже всего — что причину не видно.
+        showNotice("Не удалось прочитать выделение на этой странице. Выделите текст ещё раз.");
         sendResponse({ ok: false, reason: "no-selection" });
         return undefined;
       }

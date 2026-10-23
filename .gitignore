@@ -2,6 +2,8 @@
 # профили браузера: внутри живые cookie Telegram и сайта, публиковать нельзя
 .browser-profile/
 _chrome_tg/
+_chrome_shot/
+_chrome_shot2/
 _tmp_chrome/
 
 # снимки экрана и отладочные выгрузки

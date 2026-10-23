@@ -80,11 +80,15 @@
       } catch {
         data = null;
       }
-      return { ok: true, status: res.status, data };
+      // ok — это успех HTTP, а не «тело разобралось». Раньше здесь стояло
+      // безусловное true, и любая ошибка сервера (502 от модели, 500, 413)
+      // приезжала в карточку как «Сайт вернул пустой перевод»: статус
+      // терялся, разбор ошибки в воркере не срабатывал.
+      return { ok: res.ok, status: res.status, data };
     }
 
     const buf = new Uint8Array(await res.arrayBuffer());
-    return { ok: true, status: res.status, binary: toBase64(buf) };
+    return { ok: res.ok, status: res.status, binary: toBase64(buf) };
   }
 
   function toBase64(bytes) {

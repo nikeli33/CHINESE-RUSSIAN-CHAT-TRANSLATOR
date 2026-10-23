@@ -190,6 +190,9 @@ async function callApi(path, method = "GET", body) {
         "api",
       );
       if (res && res.ok) return res;
+      // Сервер ответил — пусть и отказом. Статус и тело нужны вызывающему:
+      // по ним `describe()` отличит «нужен вход» от «квота» и «сбой модели».
+      if (res && typeof res.status === "number" && res.status > 0) return res;
       return { ok: false, status: 0, code: "BRIDGE", error: res && res.error };
     } catch {
       // Таб закрыли или мост не ответил — со второй попытки поднимаем заново.
@@ -250,6 +253,12 @@ function describe(res) {
   if (status === 403) {
     return fail("LIMIT", detail || "Доступ закрыт.");
   }
+  // Формат ответа модели развалился — почти всегда это обрезанный по
+  // max_tokens JSON. Код важен вызывающему: по нему он делит текст и
+  // повторяет, вместо того чтобы сдаться.
+  if (res.data && res.data.code === "BAD_FORMAT") {
+    return fail("BAD_FORMAT", detail || "Модель вернула неожиданный формат.");
+  }
   return fail("UPSTREAM", detail || `Сайт ответил ${status || "без ответа"}.`);
 }
 
@@ -261,6 +270,56 @@ function detectDirection(text) {
   return CJK.test(text) ? "zh-ru" : "ru-zh";
 }
 
+/**
+ * Размер порции одного запроса, в символах исходника.
+ *
+ * Это не «сколько человеку позволено выделить», а размер куска. Ручка просит
+ * у модели JSON из пиньиня, перевода и разбора по словам, а бюджет ответа
+ * режется по max_tokens. На абзаце в 200+ иероглифов пиньинь съедает весь
+ * бюджет, JSON приходит обрезанным — и перевода нет вовсе. Поэтому длинный
+ * текст едет несколькими порциями.
+ */
+const CHUNK_MAX = 100;
+
+/**
+ * Порезать текст на порции по границам предложений.
+ *
+ * Режем там, где разрыв ничего не ломает: 。！？； и перевод строки. Если само
+ * предложение длиннее порции (частое дело в русском), добиваем по запятой или
+ * пробелу, а в крайнем случае — по символу.
+ */
+function splitForTranslation(text, limit = CHUNK_MAX) {
+  const parts = [];
+  let buf = "";
+
+  const sentences = text.match(/[^。！？；!?;\n]+[。！？；!?;\n]*/g) || [text];
+
+  for (const sentence of sentences) {
+    if (buf && (buf + sentence).length > limit) {
+      parts.push(buf);
+      buf = "";
+    }
+    buf += sentence;
+
+    while (buf.length > limit) {
+      let cut = Math.max(
+        buf.lastIndexOf("，", limit),
+        buf.lastIndexOf("、", limit),
+        buf.lastIndexOf(",", limit),
+        buf.lastIndexOf(" — ", limit),
+        buf.lastIndexOf(" ", limit),
+      );
+      if (cut < limit * 0.4) cut = limit - 1;
+      parts.push(buf.slice(0, cut + 1));
+      buf = buf.slice(cut + 1);
+    }
+  }
+
+  if (buf.trim()) parts.push(buf);
+  // Краевые пробелы убираем: иначе на стыке порций выйдет двойной пробел.
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
 async function translate(rawText, direction) {
   const text = String(rawText ?? "").trim();
   if (!text) return fail("EMPTY", "Пустой текст.");
@@ -269,6 +328,69 @@ async function translate(rawText, direction) {
   const dir = direction === "auto" || !direction ? detectDirection(text) : direction;
   const key = `${dir}|${text}`;
 
+  const cached = await cacheGet(key);
+  if (cached) return { ok: true, result: cached, cached: true };
+
+  const chunks = splitForTranslation(text);
+  if (chunks.length <= 1) {
+    const one = await translatePiece(text, dir);
+    if (!one.ok) return one;
+    await cacheSet(key, one.result);
+    return { ok: true, result: one.result, cached: false };
+  }
+
+  // Порции идут по очереди, а не веером: параллель — это всплеск запросов к
+  // модели, а он упирается в лимит частоты, и часть порций падает.
+  const pieces = [];
+  for (const chunk of chunks) {
+    const one = await translatePiece(chunk, dir);
+    if (!one.ok) return one;
+    pieces.push(one.result.dst);
+  }
+
+  const result = {
+    direction: dir,
+    src: text,
+    // Китайский склеиваем вплотную, русский — через пробел: там пробел значим.
+    dst: pieces.join(dir === "ru-zh" ? "" : " "),
+  };
+  await cacheSet(key, result);
+  return { ok: true, result, cached: false };
+}
+
+/**
+ * Порция с подстраховкой.
+ *
+ * Если модель всё равно не уложилась в бюджет ответа и вернула обрезанный
+ * JSON (BAD_FORMAT), порция делится пополам и уходит двумя запросами. Так
+ * предел длины перестаёт быть угаданным числом: он подстраивается под то,
+ * что модель реально может выдать, и не ломается при смене модели.
+ */
+async function translatePiece(text, dir, depth = 0) {
+  const one = await translateChunk(text, dir);
+  if (one.ok) return one;
+
+  if (one.code !== "BAD_FORMAT" || depth >= 2 || text.length < 40) return one;
+
+  const halves = splitForTranslation(text, Math.ceil(text.length / 2));
+  if (halves.length < 2) return one;
+
+  const pieces = [];
+  for (const half of halves) {
+    const sub = await translatePiece(half, dir, depth + 1);
+    if (!sub.ok) return sub;
+    pieces.push(sub.result.dst);
+  }
+  return {
+    ok: true,
+    result: { direction: dir, src: text, dst: pieces.join(dir === "ru-zh" ? "" : " ") },
+    cached: false,
+  };
+}
+
+/** Одна порция: запрос к ручке и разбор её ответа. */
+async function translateChunk(text, dir) {
+  const key = `${dir}|${text}`;
   const cached = await cacheGet(key);
   if (cached) return { ok: true, result: cached, cached: true };
 
@@ -295,7 +417,7 @@ async function translate(rawText, direction) {
   }
 
   const ru = res.data && (res.data.ru || res.data.translation);
-  if (!ru) return fail("UPSTREAM", "Сайт вернул пустой перевод.");
+  if (!ru) return fail("UPSTREAM", "Сайт ответил без перевода.");
 
   const result = { direction: dir, src: text, dst: String(ru) };
   await cacheSet(key, result);
