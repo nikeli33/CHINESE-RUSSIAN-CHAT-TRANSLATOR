@@ -38,6 +38,8 @@
     shadow: null,
     seal: null,
     card: null,
+    // Панель кандидатов при наборе пиньинем.
+    ime: null,
     saved: null,
     css: null,
     busy: false,
@@ -56,7 +58,7 @@
     evaBusy: false,
     // Настройки приезжают из службы при старте и обновляются на изменение
     // хранилища. Значения по умолчанию здесь — только до первого ответа.
-    settings: { tts: true, autoSeal: true, theme: "auto", direction: "auto" },
+    settings: { tts: true, autoSeal: true, theme: "auto", direction: "auto", pinyin: true },
   };
 
   /* ── Стили ─────────────────────────────────────────────────────────────── */
@@ -1045,6 +1047,256 @@
     }
   }
 
+  /* ── Ввод пиньинем ─────────────────────────────────────────────────────── */
+
+  /**
+   * Набрал «nihao» — получил 你好.
+   *
+   * Работает по слогам, как шаг «Скажите сами» на сайте: латинский хвост перед
+   * курсором считается слогом, словарь отдаёт его иероглифы. После подстановки
+   * курсор стоит за иероглифом, и следующий слог набирается заново — так
+   * «ni» → 你, «hao» → 好 сами складываются в 你好, без всякой сегментации.
+   *
+   * Словарь лежит в расширении (`vendor/pinyin-dict.js`, 37 КБ). Это главное
+   * отличие от сайта: там кандидатов спрашивают у `/api/pinyin-input`, а здесь
+   * подсказка нужна на каждом нажатии клавиши. Ходить в сеть за ней — значит
+   * дёргать вкладку-мост, тратить суточную квоту сайта и ждать ответа там,
+   * где человек просто печатает. При наборе не уходит ни одного запроса.
+   *
+   * Тоны на вводе не учитываются: «zhe», «zhè» и «ZHE» — один слог. Один
+   * иероглиф может читаться по-разному и попадает во все свои слоги.
+   */
+
+  /** Сколько кандидатов показывать: остальные всё равно не выбирают. */
+  const IME_SHOWN = 12;
+
+  /** Латинский хвост перед курсором, с диакритикой на случай «zhè». */
+  const SYLLABLE_RE = /([a-zA-Zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜü]+)$/;
+
+  /** Поля, у которых есть `selectionStart` и осмысленный текстовый ввод. */
+  const TEXT_INPUTS = new Set(["text", "search", "url", "tel"]);
+
+  function hideIme() {
+    if (state.ime && state.ime.isConnected) state.ime.remove();
+    state.ime = null;
+  }
+
+  /**
+   * «Zhe» → «zhe», «lǜ» → «lv».
+   *
+   * `ü` заменяем ДО нормализации: NFD разлагает её на «u» + диэрезис, и после
+   * снятия диакритики от неё осталось бы просто «u» — «lü» превратился бы
+   * в «lu», а такого слога в словаре нет.
+   */
+  function normalizeSyllable(raw) {
+    return String(raw)
+      .toLowerCase()
+      .replace(/ü/g, "v")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z]/g, "");
+  }
+
+  function imeCandidates(syllable) {
+    const dict = window.__ctPinyinDict;
+    if (!dict || typeof dict !== "object") return null;
+    const list = dict[syllable];
+    return Array.isArray(list) && list.length ? list : null;
+  }
+
+  /** Редактируемое поле по настоящему узлу события (после retargeting). */
+  function editableFor(node) {
+    if (!node || node.nodeType !== 1) return null;
+    if (node.tagName === "INPUT") {
+      return TEXT_INPUTS.has(String(node.type || "text").toLowerCase()) ? node : null;
+    }
+    if (node.tagName === "TEXTAREA") return node;
+    if (node.isContentEditable) return node;
+    return null;
+  }
+
+  /** Селекшн того дерева, где живёт поле: у поля в shadow root он свой. */
+  function selectionOf(field) {
+    const root = field.getRootNode ? field.getRootNode() : document;
+    if (root && root !== document && typeof root.getSelection === "function") {
+      return root.getSelection();
+    }
+    return window.getSelection();
+  }
+
+  /**
+   * Слог непосредственно перед курсором.
+   *
+   * Для input/textarea — по значению и `selectionStart`. Для contenteditable —
+   * по узлу и смещению каретки; если каретка стоит в элементе, а не в тексте
+   * (пустой редактор), слога нет.
+   */
+  function syllableAtCaret(field) {
+    if (field.tagName === "INPUT" || field.tagName === "TEXTAREA") {
+      const start = field.selectionStart;
+      const end = field.selectionEnd;
+      if (typeof start !== "number" || start !== end) return null;
+      const match = SYLLABLE_RE.exec(String(field.value).slice(0, start));
+      if (!match) return null;
+      return { token: match[1], start: start - match[1].length, end: start, node: null };
+    }
+
+    const sel = selectionOf(field);
+    if (!sel || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!range.collapsed) return null;
+    const node = range.startContainer;
+    if (!node || node.nodeType !== 3) return null;
+
+    const offset = range.startOffset;
+    const match = SYLLABLE_RE.exec(String(node.data).slice(0, offset));
+    if (!match) return null;
+    return { token: match[1], start: offset - match[1].length, end: offset, node };
+  }
+
+  /** Range, накрывающий набранный слог внутри текстового узла. */
+  function tokenRange(token) {
+    if (!token.node) return null;
+    try {
+      const range = document.createRange();
+      range.setStart(token.node, token.start);
+      range.setEnd(token.node, token.end);
+      return range;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Заменить слог иероглифом — тем же путём, что и обычная вставка. */
+  function replaceSyllable(field, token, char) {
+    const saved = token.node
+      ? { el: field, range: tokenRange(token) }
+      : { el: field, start: token.start, end: token.end };
+    return insertText(char, saved);
+  }
+
+  /** Где рисовать панель: у каретки, а если её не видно — под полем. */
+  function caretRect(field, token) {
+    if (token.node) {
+      const range = tokenRange(token);
+      const box = range ? range.getBoundingClientRect() : null;
+      if (box && (box.top || box.height)) return box;
+    }
+    const box = field.getBoundingClientRect();
+    return {
+      left: box.left,
+      right: box.right,
+      top: box.top,
+      bottom: box.bottom,
+      width: box.width,
+      height: box.height,
+    };
+  }
+
+  /**
+   * Панель кандидатов под кареткой.
+   *
+   * Ставим вниз от каретки (так ведёт себя системный IME), а если не влезает —
+   * над ней. Клик по панели гасим на mousedown: иначе поле теряет фокус
+   * раньше, чем мы заменим выделение, и заменять будет нечего.
+   */
+  function positionIme(panel, rect) {
+    panel.style.visibility = "hidden";
+    panel.style.left = "0px";
+    panel.style.top = "0px";
+
+    const box = panel.getBoundingClientRect();
+    const width = box.width || 260;
+    const height = box.height || 80;
+    const gap = 6;
+
+    let left = rect ? rect.left : 40;
+    let top = rect ? rect.bottom + gap : 80;
+    if (top + height > window.innerHeight - 8) {
+      top = Math.max(8, (rect ? rect.top : 80) - height - gap);
+    }
+
+    left = Math.min(Math.max(8, left), Math.max(8, window.innerWidth - width - 8));
+    top = Math.min(Math.max(8, top), Math.max(8, window.innerHeight - height - 8));
+
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.visibility = "visible";
+  }
+
+  async function showIme(field, token, candidates, rect) {
+    const shadow = await ensureHost();
+    if (!shadow) return;
+    // Пока ждали хост, человек мог стереть слог — тогда панель уже не нужна.
+    if (!field.isConnected) return;
+    hideIme();
+
+    const panel = el("div", "ct-ime");
+    panel.setAttribute("role", "listbox");
+    panel.setAttribute("aria-label", "Кандидаты-иероглифы");
+    panel.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    panel.addEventListener("click", (event) => event.stopPropagation());
+
+    const head = el("div", "ct-ime-head");
+    head.appendChild(el("span", "ct-ime-token", token.token));
+    head.appendChild(el("span", "ct-ime-hint", "выберите иероглиф"));
+    panel.appendChild(head);
+
+    const grid = el("div", "ct-ime-grid");
+    for (const char of candidates) {
+      const item = el("button", "ct-ime-item", char);
+      item.type = "button";
+      item.setAttribute("role", "option");
+      item.title = `${token.token} → ${char}`;
+      item.addEventListener("click", () => {
+        const done = replaceSyllable(field, token, char);
+        hideIme();
+        if (!done.ok) showNotice("Не удалось подставить иероглиф в это поле.");
+      });
+      grid.appendChild(item);
+    }
+    panel.appendChild(grid);
+
+    shadow.appendChild(panel);
+    state.ime = panel;
+    positionIme(panel, rect);
+  }
+
+  /** Один обработчик на всё: ввод, удаление, вставка из буфера. */
+  function onInput(event) {
+    if (!state.settings.pinyin) return;
+    const field = editableFor(event.composedPath ? event.composedPath()[0] : event.target);
+    if (!field) {
+      hideIme();
+      return;
+    }
+
+    const token = syllableAtCaret(field);
+    if (!token) {
+      hideIme();
+      return;
+    }
+
+    const syllable = normalizeSyllable(token.token);
+    // Одна буква — это ещё не слог: «a» и «e» есть в словаре, но панель на
+    // каждую первую букву слова только мешает.
+    if (syllable.length < 2) {
+      hideIme();
+      return;
+    }
+
+    const candidates = imeCandidates(syllable);
+    if (!candidates) {
+      hideIme();
+      return;
+    }
+
+    void showIme(field, token, candidates.slice(0, IME_SHOWN), caretRect(field, token));
+  }
+
   /* ── Буфер и звук ──────────────────────────────────────────────────────── */
 
   function copyText(text) {
@@ -1130,6 +1382,7 @@
     if (state.host && event.composedPath && event.composedPath().includes(state.host)) return;
     hideSeal();
     hideCard();
+    hideIme();
   }
 
   function onScroll(event) {
@@ -1137,18 +1390,25 @@
     if (state.host && event && event.composedPath && event.composedPath().includes(state.host)) return;
     hideSeal();
     hideCard();
+    // Панель пиньиня привязана к координатам экрана: после прокрутки она
+    // оказалась бы не над полем, а где попало.
+    hideIme();
   }
 
   function onKeyDown(event) {
     if (event.key === "Escape") {
       hideSeal();
       hideCard();
+      hideIme();
     }
   }
 
   document.addEventListener("mouseup", onMouseUp, true);
   document.addEventListener("mousedown", onMouseDown, true);
   document.addEventListener("keydown", onKeyDown, true);
+  // `input` всплывает и из shadow root (событие composed), поэтому слушаем
+  // документ целиком, а настоящее поле достаём из composedPath.
+  document.addEventListener("input", onInput, true);
   window.addEventListener("scroll", onScroll, { passive: true, capture: true });
   window.addEventListener("resize", onScroll, { passive: true });
 
@@ -1169,9 +1429,11 @@
         theme: next.theme === "dark" || next.theme === "light" ? next.theme : "auto",
         direction:
           next.direction === "zh-ru" || next.direction === "ru-zh" ? next.direction : "auto",
+        pinyin: next.pinyin !== false,
       };
     }
     applyTheme();
+    if (!state.settings.pinyin) hideIme();
   }
 
   void loadSettings();

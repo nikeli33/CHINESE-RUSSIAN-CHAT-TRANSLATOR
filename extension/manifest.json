@@ -3,7 +3,7 @@
   "name": "红龙 Переводчик — перевод в чатах",
   "short_name": "红龙 Переводчик",
   "description": "Выдели текст в любом чате — получи иероглифы, пиньинь и озвучку. Вставка обратно в поле ввода. Только для аккаунтов HONGLONG.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "minimum_chrome_version": "116",
   "background": {
     "service_worker": "background.js",
@@ -43,7 +43,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["vendor/pinyin-pro.js", "content/chat.js"],
+      "js": ["vendor/pinyin-pro.js", "vendor/pinyin-dict.js", "content/chat.js"],
       "run_at": "document_idle",
       "all_frames": true
     },

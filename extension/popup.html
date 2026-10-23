@@ -334,7 +334,7 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
-        max-height: 120px;
+        max-height: 80px;
         margin-top: 6px;
         overflow-y: auto;
         scrollbar-width: thin;
@@ -469,6 +469,11 @@
         <span>Кнопка озвучки в карточке</span>
       </label>
 
+      <label class="check">
+        <input type="checkbox" id="set-pinyin" />
+        <span>Ввод пиньинем: латиница → 汉字</span>
+      </label>
+
       <div class="field">
         <span class="field-label">Тема карточки</span>
         <select id="set-theme">
@@ -521,6 +526,10 @@
         <div class="muted" style="margin-top: 6px">
           <b>Alt+T</b> — перевести выделенное, <b>Alt+S</b> — включить или
           выключить печать. Клавиши меняются на chrome://extensions.
+        </div>
+        <div class="muted" style="margin-top: 6px">
+          Печатайте пиньинь латиницей в любом поле — над ним появятся иероглифы
+          этого слога. Словарь лежит внутри расширения, в сеть ничего не уходит.
         </div>
       </details>
     </section>

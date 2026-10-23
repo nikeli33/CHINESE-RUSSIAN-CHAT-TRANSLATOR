@@ -100,6 +100,8 @@ const SETTINGS_DEFAULTS = {
   theme: "auto",
   /** auto — определять по тексту, иначе всегда в эту сторону. */
   direction: "auto",
+  /** Подсказка иероглифов при наборе пиньинем латиницей. */
+  pinyin: true,
 };
 
 const THEMES = ["auto", "light", "dark"];
@@ -114,6 +116,7 @@ async function settings() {
     autoSeal: raw.autoSeal !== false,
     theme: THEMES.includes(raw.theme) ? raw.theme : SETTINGS_DEFAULTS.theme,
     direction: DIRECTIONS.includes(raw.direction) ? raw.direction : SETTINGS_DEFAULTS.direction,
+    pinyin: raw.pinyin !== false,
   };
 }
 
@@ -131,6 +134,7 @@ async function saveSettings(patch) {
     if (typeof patch.autoSeal === "boolean") next.autoSeal = patch.autoSeal;
     if (THEMES.includes(patch.theme)) next.theme = patch.theme;
     if (DIRECTIONS.includes(patch.direction)) next.direction = patch.direction;
+    if (typeof patch.pinyin === "boolean") next.pinyin = patch.pinyin;
   }
   await chrome.storage.local.set({ ctSettings: next });
   return next;

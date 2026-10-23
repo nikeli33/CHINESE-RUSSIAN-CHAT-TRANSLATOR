@@ -699,3 +699,81 @@
   line-height: 1;
   color: var(--tone-2);
 }
+
+/* ── Ввод пиньинем ───────────────────────────────────────────────────────── */
+
+/* Панель кандидатов появляется у каретки при наборе латиницей. Она не карточка:
+   карточку человек открывает сам, а эта панель всплывает под пальцами, поэтому
+   она уже, ниже и без заголовка с крестиком — мешать набору она не должна. */
+.ct-ime {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+  width: 268px;
+  padding: 7px 8px 8px;
+  background: var(--paper-hi);
+  border: 1px solid var(--paper-line);
+  border-radius: 2px;
+  box-shadow: var(--ct-shadow);
+  font-family: var(--font-sans);
+}
+
+.ct-ime-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 0 1px 6px;
+}
+
+/* Набранный слог — латиницей и приглушённо: глаз должен цепляться за
+   иероглифы, а не за то, что уже набрано. */
+.ct-ime-token {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--bronze-deep);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+
+.ct-ime-hint {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.ct-ime-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+}
+
+.ct-ime-item {
+  height: 34px;
+  padding: 0;
+  background: var(--paper);
+  border: 1px solid var(--paper-line);
+  border-radius: 2px;
+  font-family: var(--font-hanzi);
+  font-size: 17px;
+  line-height: 1;
+  color: var(--ink-strong);
+  cursor: pointer;
+  transition: border-color 80ms linear, background 80ms linear, color 80ms linear;
+}
+
+.ct-ime-item:hover {
+  background: var(--paper-hi);
+  border-color: var(--seal);
+  color: var(--seal);
+}
+
+.ct-ime-item:focus-visible {
+  outline: 2px solid var(--bronze);
+  outline-offset: 1px;
+}

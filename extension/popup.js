@@ -95,6 +95,7 @@ function renderBridge(status) {
 const settingsUi = {
   seal: $("set-seal"),
   tts: $("set-tts"),
+  pinyin: $("set-pinyin"),
   theme: $("set-theme"),
   direction: $("set-direction"),
 };
@@ -103,6 +104,7 @@ function renderSettings(config) {
   if (!config) return;
   settingsUi.seal.checked = config.autoSeal !== false;
   settingsUi.tts.checked = config.tts !== false;
+  settingsUi.pinyin.checked = config.pinyin !== false;
   settingsUi.theme.value = config.theme || "auto";
   settingsUi.direction.value = config.direction || "auto";
   // Строка состояния нужна только на время записи, а не постоянно.
@@ -135,6 +137,9 @@ settingsUi.seal.addEventListener("change", () =>
   pushSettings({ autoSeal: settingsUi.seal.checked }),
 );
 settingsUi.tts.addEventListener("change", () => pushSettings({ tts: settingsUi.tts.checked }));
+settingsUi.pinyin.addEventListener("change", () =>
+  pushSettings({ pinyin: settingsUi.pinyin.checked }),
+);
 settingsUi.theme.addEventListener("change", () => pushSettings({ theme: settingsUi.theme.value }));
 settingsUi.direction.addEventListener("change", () =>
   pushSettings({ direction: settingsUi.direction.value }),
