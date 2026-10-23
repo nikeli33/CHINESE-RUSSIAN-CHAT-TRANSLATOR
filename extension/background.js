@@ -58,6 +58,34 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     .catch(() => {});
 });
 
+/* ── Горячие клавиши ─────────────────────────────────────────────────────── */
+
+/**
+ * Комбинации клавиш делают ровно то же, что меню и попап.
+ *
+ * Текст по-прежнему читает контент-скрипт: у службы нет доступа к выделению,
+ * а `selectionText` из меню теряет переносы строк. Здесь только «нажать за
+ * человека» — нового пути к данным не появляется.
+ *
+ * Если комбинация занята другой программой, Chrome просто не позовёт
+ * обработчик; человек может переназначить клавиши на chrome://extensions.
+ */
+chrome.commands.onCommand.addListener(async (command) => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || typeof tab.id !== "number") return;
+
+  if (command === "translate-selection") {
+    // Направление «auto»: контент-скрипт сам подставит выбранное в настройках.
+    chrome.tabs.sendMessage(tab.id, { type: "ct:menu-translate", direction: "auto" }).catch(() => {});
+    return;
+  }
+
+  if (command === "toggle-seal") {
+    const now = await settings();
+    await saveSettings({ autoSeal: !now.autoSeal });
+  }
+});
+
 /* ── Настройки ───────────────────────────────────────────────────────────── */
 
 /**

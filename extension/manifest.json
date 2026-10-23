@@ -3,7 +3,7 @@
   "name": "红龙 Переводчик — перевод в чатах",
   "short_name": "红龙 Переводчик",
   "description": "Выдели текст в любом чате — получи иероглифы, пиньинь и озвучку. Вставка обратно в поле ввода. Только для аккаунтов HONGLONG.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "minimum_chrome_version": "116",
   "background": {
     "service_worker": "background.js",
@@ -26,6 +26,16 @@
     "128": "icons/icon-128.png"
   },
   "permissions": ["contextMenus", "storage", "tabs", "scripting"],
+  "commands": {
+    "translate-selection": {
+      "suggested_key": { "default": "Alt+T" },
+      "description": "Перевести выделенное"
+    },
+    "toggle-seal": {
+      "suggested_key": { "default": "Alt+S" },
+      "description": "Включить или выключить печать при выделении"
+    }
+  },
   "host_permissions": [
     "https://honglong.nexusbots.ru/*",
     "http://localhost:3000/*"
