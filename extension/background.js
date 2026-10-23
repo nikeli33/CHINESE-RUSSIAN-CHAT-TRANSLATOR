@@ -206,6 +206,30 @@ async function wordsClear() {
 
 /* ── Мост ────────────────────────────────────────────────────────────────── */
 
+/**
+ * Сколько ждём подъёма моста, когда человек уже нажал «перевести».
+ *
+ * Раньше ожидание складывалось из 60 проб по 250 мс, стольких же на переход
+ * к обычной странице и 30 с на сам вызов — до получаса тишины в худшем случае
+ * (а на практике до полуминуты). Тишина читается как «сломалось»: человек
+ * успевает решить, что расширение не работает, и уходит.
+ *
+ * Теперь бюджет жёсткий. Вкладка при этом НЕ закрывается и продолжает
+ * грузиться в фоне: к моменту, когда человек нажмёт «повторить», она почти
+ * всегда уже готова, и повтор отвечает мгновенно.
+ */
+const BRIDGE_BUDGET_MS = 4_000;
+
+/**
+ * Первый запуск — исключение.
+ *
+ * Пока переводчиком ни разу не пользовались, прогрева не было (см.
+ * `warmBridge`), и вкладки сайта в браузере заведомо нет. Сдаться за четыре
+ * секунды на первой же попытке — худшее первое впечатление из возможных,
+ * поэтому здесь ждём по-настоящему.
+ */
+const BRIDGE_FIRST_BUDGET_MS = 12_000;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function withTimeout(promise, ms, label) {
@@ -213,6 +237,11 @@ function withTimeout(promise, ms, label) {
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`timeout:${label}`)), ms)),
   ]);
+}
+
+/** Ждать не дольше обещанного; по истечении — null, а не исключение. */
+function withBudget(promise, ms) {
+  return Promise.race([promise.catch(() => null), sleep(Math.max(0, ms)).then(() => null)]);
 }
 
 async function pingTab(tabId) {
@@ -310,11 +339,29 @@ async function ensureBridge(force = false) {
   return ensuring;
 }
 
-/** Вызов ручки сайта из контекста сайта. */
+/**
+ * Вызов ручки сайта из контекста сайта.
+ *
+ * Весь бюджет ожидания моста — один на вызов, а не на попытку: две попытки
+ * по четыре секунды дали бы восемь, и «быстро сдаться» перестало бы быть
+ * быстрым. Сам запрос после того, как мост найден, живёт отдельно: модель
+ * думает 10–20 секунд, и этот срок к подъёму вкладки отношения не имеет.
+ */
 async function callApi(path, method = "GET", body) {
+  const { ctUsed } = await chrome.storage.local.get("ctUsed");
+  const deadline = Date.now() + (ctUsed ? BRIDGE_BUDGET_MS : BRIDGE_FIRST_BUDGET_MS);
+
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const tabId = await ensureBridge(attempt > 0);
-    if (tabId == null) return { ok: false, status: 0, code: "BRIDGE" };
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+
+    const tabId = await withBudget(ensureBridge(attempt > 0), left);
+    if (tabId == null) {
+      // Не встал за отведённое время. Повторять внутри того же бюджета
+      // бессмысленно: вкладка уже грузится, а `ensureBridge(force)` открыл бы
+      // вторую. Пусть человек нажмёт «повторить» — к тому моменту она готова.
+      break;
+    }
 
     try {
       const res = await withTimeout(
@@ -322,7 +369,13 @@ async function callApi(path, method = "GET", body) {
         30_000,
         "api",
       );
-      if (res && res.ok) return res;
+      if (res && res.ok) {
+        // Мост ответил хотя бы раз — значит переводчиком пользуются, и со
+        // следующего выделения его можно поднимать заранее. Запись одна на
+        // всю жизнь профиля, поэтому цена ей нулевая.
+        if (!ctUsed) chrome.storage.local.set({ ctUsed: true }).catch(() => {});
+        return res;
+      }
       // Сервер ответил — пусть и отказом. Статус и тело нужны вызывающему:
       // по ним `describe()` отличит «нужен вход» от «квота» и «сбой модели».
       if (res && typeof res.status === "number" && res.status > 0) return res;
@@ -333,6 +386,26 @@ async function callApi(path, method = "GET", body) {
     }
   }
   return { ok: false, status: 0, code: "BRIDGE" };
+}
+
+/**
+ * Поднять мост заранее, пока человек ещё читает выделение.
+ *
+ * Дёргается из контент-скрипта в момент появления печати «译»: до клика
+ * проходят секунды, и за это время вкладка сайта успевает загрузиться.
+ *
+ * Только для тех, кто переводчиком уже пользовался: иначе первое же выделение
+ * любого текста открывало бы вкладку сайта без всякой просьбы. Первый перевод
+ * в жизни человека прогрева не имеет — под него есть отдельный бюджет.
+ */
+async function warmBridge() {
+  const { ctUsed } = await chrome.storage.local.get("ctUsed");
+  if (!ctUsed) return { ok: true, warmed: false };
+
+  // Никто не ждёт ответа: провал прогрева — не ошибка, следующий вызов
+  // попробует снова и скажет своё слово.
+  ensureBridge(false).catch(() => {});
+  return { ok: true, warmed: true };
 }
 
 /* ── Кэш переводов ───────────────────────────────────────────────────────── */
@@ -370,7 +443,7 @@ function describe(res) {
   if (res.code === "BRIDGE") {
     return fail(
       "BRIDGE",
-      "Не удалось открыть вкладку honglong.nexusbots.ru. Проверьте, что сайт доступен, и повторите.",
+      "Не дождались honglong.nexusbots.ru. Вкладка сайта обычно догружается в фоне — нажмите «Повторить».",
     );
   }
   const status = res.status ?? 0;
@@ -716,6 +789,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       sendResponse({ ok: true });
       return undefined;
+    }
+
+    case "ct:bridge-warm": {
+      // Ответ уходит сразу: контент-скрипт не должен ждать загрузки вкладки.
+      warmBridge().then(sendResponse, () => sendResponse({ ok: false }));
+      return true;
     }
 
     case "ct:translate": {

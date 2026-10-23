@@ -327,9 +327,31 @@
     state.seal = null;
   }
 
+  /* ── Прогрев моста ─────────────────────────────────────────────────────── */
+
+  /**
+   * Поднять вкладку-мост заранее.
+   *
+   * Печать появляется в момент выделения, а нажимают на неё через секунду-
+   * две — за это время вкладка сайта успевает загрузиться, и перевод приходит
+   * без ожидания. Решение «прогревать или нет» принимает служба: она знает,
+   * пользовались ли переводчиком раньше. Иначе первое выделение любого текста
+   * открывало бы вкладку сайта без просьбы.
+   *
+   * Троттлинг нужен, чтобы не будить службу на каждое выделение: прогревать
+   * чаще раза в полминуты бессмысленно — мост либо уже есть, либо грузится.
+   */
+  let warmedAt = 0;
+  function warmBridge() {
+    if (Date.now() - warmedAt < 30_000) return;
+    warmedAt = Date.now();
+    chrome.runtime.sendMessage({ type: "ct:bridge-warm" }).catch(() => {});
+  }
+
   async function showSeal(saved) {
     if (!saved || !saved.rect) return;
     hideSeal();
+    warmBridge();
 
     const shadow = await ensureHost();
     if (!state.host || !state.host.isConnected) return;
@@ -520,17 +542,33 @@
     card.appendChild(body);
   }
 
-  function noteCard(card, label, text, link) {
+  /**
+   * Карточка-сообщение вместо перевода.
+   *
+   * `action` — либо ссылка (`href`), либо действие в самой карточке
+   * (`onClick`): «Повторить» не должно уводить человека на сайт, ему нужно
+   * повторить попытку здесь.
+   */
+  function noteCard(card, label, text, action) {
     // В карточке уже может висеть «перевожу…» — заменяем, а не дописываем.
     card.replaceChildren();
     head(card, label);
     const body = el("div", "ct-note");
     body.appendChild(el("div", null, text));
-    if (link) {
-      const a = el("div", "ct-link", link.label);
+    if (action) {
+      const a = el("div", "ct-link", action.label);
       a.style.marginTop = "8px";
+      a.setAttribute("role", "button");
+      a.tabIndex = 0;
       a.addEventListener("click", () => {
-        window.open(link.href, "_blank", "noopener");
+        if (typeof action.onClick === "function") action.onClick();
+        else window.open(action.href, "_blank", "noopener");
+      });
+      a.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        if (typeof action.onClick === "function") action.onClick();
+        else window.open(action.href, "_blank", "noopener");
       });
       body.appendChild(a);
     }
@@ -914,13 +952,22 @@
 
     if (!response || !response.ok) {
       const message = (response && response.message) || "Перевод недоступен.";
+      const code = response && response.code;
+
+      // «Повторить» — только для моста: остальные отказы (нужен вход, лимит,
+      // пустой ответ) повтором не лечатся, и кнопка врала бы.
+      let action = null;
+      if (code === "BRIDGE") {
+        action = { label: "Повторить", onClick: () => void runTranslate(saved, direction) };
+      } else if (code === "AUTH") {
+        action = { label: "Открыть honglong.nexusbots.ru", href: "https://honglong.nexusbots.ru/login" };
+      }
+
       noteCard(
         state.card,
         dir === "ru-zh" ? "русский → 中文" : "中文 → русский",
         message,
-        response && response.code === "AUTH"
-          ? { label: "Открыть honglong.nexusbots.ru", href: "https://honglong.nexusbots.ru/login" }
-          : null,
+        action,
       );
       positionCard(state.card, saved.rect);
       return;
