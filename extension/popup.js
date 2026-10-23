@@ -67,20 +67,27 @@ function renderBridge(status) {
   const state = $("bridge-state");
   const note = $("bridge-note");
 
+  /* Строка под «Мостом» нужна только когда что-то не так: в рабочем
+     состоянии она занимала высоту, которой в попапе и без неё тесно. */
+  const say = (text) => {
+    note.textContent = text;
+    note.hidden = !text;
+  };
+
   if (!status) {
     state.textContent = "нет ответа";
-    note.textContent = "Service worker не ответил. Перезагрузите расширение.";
+    say("Service worker не ответил. Перезагрузите расширение.");
     return;
   }
 
   if (status.auth && status.auth.error) {
     state.textContent = "не поднят";
-    note.textContent = "Вкладка сайта не открылась — проверьте, что сайт доступен.";
+    say("Вкладка сайта не открылась — проверьте, что сайт доступен.");
     return;
   }
 
   state.textContent = "готов";
-  note.textContent = "Вкладка сайта держится в фоне и закрывается сама.";
+  say("");
 }
 
 /* ── Настройки ───────────────────────────────────────────────────────────── */
