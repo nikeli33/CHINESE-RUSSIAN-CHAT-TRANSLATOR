@@ -83,11 +83,47 @@
   --font-display: "Cormorant Garamond", "Noto Serif SC", Georgia, serif;
   --font-hanzi: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun",
     "Microsoft YaHei", serif;
+  --ct-shadow: 0 10px 28px rgba(13, 13, 13, 0.22);
+  --ct-on-cta: #f4f4f8;
 
   all: initial;
   font-family: var(--font-sans);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Тёмная тема: та же «тушь и золото», только с другой стороны.
+   Включается атрибутом на host'е, а его ставит content script, посмотрев на
+   настоящий фон страницы, — карточка должна совпадать с чатом, а не с ОС.
+   `all: initial` в блоке выше не сбрасывает кастомные свойства, поэтому
+   переопределение работает; специфичность `:host([...])` выше `:host`. */
+:host([data-theme="dark"]) {
+  --ink-950: #f2f1ec;
+  --ink-900: #e9e8e2;
+  --ink-800: #dedcd4;
+  --ink-700: #d3d1c9;
+  --paper: #232326;
+  --paper-hi: #1a1a1c;
+  --paper-deep: #33333a;
+  --paper-line: rgba(216, 195, 145, 0.2);
+  --ink: #d7d5cd;
+  --ink-strong: #f0eee8;
+  --ink-muted: #9e9c93;
+  --ink-faint: #7c7a72;
+  --cta: #c05a4a;
+  --cta-hi: #cd6b5a;
+  --cta-lo: #a04a3c;
+  --seal: #e35a45;
+  --gold: #d8c391;
+  --bronze: #b99a72;
+  --bronze-deep: #c9a97a;
+  --tone-1: #7fa8d8;
+  --tone-2: #86bf94;
+  --tone-3: #b79ad4;
+  --tone-4: #d98a80;
+  --tone-5: #a3a3a3;
+  --ct-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  --ct-on-cta: #14100e;
 }
 
 *,
@@ -119,7 +155,6 @@
   box-shadow: 0 2px 8px rgba(13, 13, 13, 0.18);
   transition: background 90ms linear, color 90ms linear;
 }
-
 .ct-seal:hover {
   background: var(--seal);
   color: var(--paper-hi);
@@ -143,7 +178,7 @@
   background: var(--paper-hi);
   border: 1px solid var(--paper-line);
   border-radius: 3px;
-  box-shadow: 0 10px 28px rgba(13, 13, 13, 0.22);
+  box-shadow: var(--ct-shadow);
   /* Карточка не должна быть выше окна: ответ Евы легко её вытягивает. */
   max-height: calc(100vh - 16px);
   overflow: hidden auto;
@@ -151,6 +186,11 @@
      рисуются чёрными — на бумажном фоне это выглядит как дыра. */
   color-scheme: light;
   animation: ct-in 120ms ease-out;
+}
+
+/* В тёмной теме и нативные полосы прокрутки должны быть тёмными. */
+:host([data-theme="dark"]) .ct-card {
+  color-scheme: dark;
 }
 
 @keyframes ct-in {
@@ -493,7 +533,7 @@
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1;
-  color: #fff;
+  color: var(--ct-on-cta);
   background: var(--cta);
   border: 0;
   border-radius: 2px;
@@ -579,4 +619,83 @@
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+/* ── Слова из разбора ────────────────────────────────────────────────────── */
+
+/* Разбор приходит в том же ответе, что и перевод, поэтому чипы стоят прямо
+   в карточке: иероглиф, пиньинь, перевод. Клик — сохранить в словарь. */
+.ct-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px solid var(--paper-line);
+}
+
+.ct-word {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  max-width: 148px;
+  padding: 4px 8px 5px;
+  background: var(--paper);
+  border: 1px solid var(--paper-line);
+  border-radius: 2px;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 90ms linear, background 90ms linear;
+}
+
+.ct-word:hover {
+  border-color: var(--bronze);
+}
+
+.ct-word:focus-visible {
+  outline: 2px solid var(--bronze);
+  outline-offset: 1px;
+}
+
+.ct-word-hanzi {
+  font-family: var(--font-hanzi);
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--seal);
+}
+
+.ct-word-py {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.ct-word-ru {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.ct-word[data-saved="1"] {
+  border-color: var(--tone-2);
+}
+
+.ct-word[data-failed="1"] {
+  border-color: var(--seal);
+}
+
+.ct-word-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--tone-2);
 }

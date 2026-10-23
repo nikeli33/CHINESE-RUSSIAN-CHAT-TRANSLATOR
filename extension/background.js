@@ -60,15 +60,116 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 /* ── Настройки ───────────────────────────────────────────────────────────── */
 
+/**
+ * Что человек может менять. Значения по умолчанию — здесь, и только здесь:
+ * попап и контент-скрипт спрашивают их сообщением, чтобы не расползлись
+ * три разных представления о том, «как правильно».
+ */
+const SETTINGS_DEFAULTS = {
+  tts: true,
+  autoSeal: true,
+  /** auto — под цвет страницы, иначе принудительно. */
+  theme: "auto",
+  /** auto — определять по тексту, иначе всегда в эту сторону. */
+  direction: "auto",
+};
+
+const THEMES = ["auto", "light", "dark"];
+const DIRECTIONS = ["auto", "zh-ru", "ru-zh"];
+
 async function settings() {
   const { ctSettings } = await chrome.storage.local.get("ctSettings");
-  const origin =
-    ctSettings && SITE_ORIGINS.includes(ctSettings.origin) ? ctSettings.origin : SITE_ORIGINS[0];
+  const raw = ctSettings && typeof ctSettings === "object" ? ctSettings : {};
   return {
-    origin,
-    tts: ctSettings?.tts !== false,
-    autoSeal: ctSettings?.autoSeal !== false,
+    origin: SITE_ORIGINS.includes(raw.origin) ? raw.origin : SITE_ORIGINS[0],
+    tts: raw.tts !== false,
+    autoSeal: raw.autoSeal !== false,
+    theme: THEMES.includes(raw.theme) ? raw.theme : SETTINGS_DEFAULTS.theme,
+    direction: DIRECTIONS.includes(raw.direction) ? raw.direction : SETTINGS_DEFAULTS.direction,
   };
+}
+
+/**
+ * Запись настроек — по белому списку.
+ *
+ * Пришло что-то незнакомое (старая версия, чужая вкладка, кривой вызов) —
+ * поле просто не меняется. Никаких «сохраним как есть»: в хранилище не должно
+ * оказаться значений, которых не понимает ни один читатель.
+ */
+async function saveSettings(patch) {
+  const next = await settings();
+  if (patch && typeof patch === "object") {
+    if (typeof patch.tts === "boolean") next.tts = patch.tts;
+    if (typeof patch.autoSeal === "boolean") next.autoSeal = patch.autoSeal;
+    if (THEMES.includes(patch.theme)) next.theme = patch.theme;
+    if (DIRECTIONS.includes(patch.direction)) next.direction = patch.direction;
+  }
+  await chrome.storage.local.set({ ctSettings: next });
+  return next;
+}
+
+/* ── Словарь ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Личный словарь — в `chrome.storage.local`, рядом с настройками.
+ *
+ * Почему не сразу в SRS сайта: карточка там хранит только иероглиф и ссылку
+ * на урок, а пиньинь и перевод сайт берёт из своего индекса лексики. Слово
+ * из чужого чата в этот индекс не входит — очередь `/practice` фильтрует
+ * `lexemeIndex.has(c.id)`, и такая карточка молча выпала бы из повторения.
+ * Поэтому здесь копится то, что человек реально встретил, с пиньинем и
+ * переводом, а перенос в SRS — отдельная работа на стороне сайта.
+ *
+ * Пишет только служба: две вкладки, сохранившие слово одновременно, не
+ * затрут друг друга чтением-правкой-записью.
+ */
+const WORDS_MAX = 500;
+const WORD_LIMITS = { hanzi: 8, pinyin: 60, ru: 120 };
+
+async function wordsGet() {
+  const { ctWords } = await chrome.storage.local.get("ctWords");
+  return Array.isArray(ctWords) ? ctWords : [];
+}
+
+/** Обрезать строку и выкинуть управляющие символы — словарь не место для мусора. */
+function cleanWord(value, limit) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+async function wordSave(word) {
+  const hanzi = cleanWord(word && word.hanzi, WORD_LIMITS.hanzi);
+  if (!CJK.test(hanzi)) return fail("BAD_WORD", "Это не китайское слово.");
+  if (hanzi.length > WORD_LIMITS.hanzi) return fail("BAD_WORD", "Слишком длинная запись.");
+
+  const pinyin = cleanWord(word && word.pinyin, WORD_LIMITS.pinyin);
+  const ru = cleanWord(word && word.ru, WORD_LIMITS.ru);
+
+  const list = await wordsGet();
+  if (list.some((item) => item.hanzi === hanzi)) {
+    return { ok: true, duplicate: true, total: list.length };
+  }
+
+  list.unshift({ hanzi, pinyin, ru, at: Date.now() });
+  if (list.length > WORDS_MAX) list.length = WORDS_MAX;
+  await chrome.storage.local.set({ ctWords: list });
+  return { ok: true, duplicate: false, total: list.length };
+}
+
+async function wordRemove(hanzi) {
+  const key = cleanWord(hanzi, WORD_LIMITS.hanzi);
+  const list = await wordsGet();
+  const next = list.filter((item) => item.hanzi !== key);
+  await chrome.storage.local.set({ ctWords: next });
+  return { ok: true, total: next.length, removed: next.length !== list.length };
+}
+
+async function wordsClear() {
+  await chrome.storage.local.set({ ctWords: [] });
+  return { ok: true, total: 0 };
 }
 
 /* ── Мост ────────────────────────────────────────────────────────────────── */
@@ -342,10 +443,12 @@ async function translate(rawText, direction) {
   // Порции идут по очереди, а не веером: параллель — это всплеск запросов к
   // модели, а он упирается в лимит частоты, и часть порций падает.
   const pieces = [];
+  const words = [];
   for (const chunk of chunks) {
     const one = await translatePiece(chunk, dir);
     if (!one.ok) return one;
     pieces.push(one.result.dst);
+    mergeWords(words, one.result.words || []);
   }
 
   const result = {
@@ -353,6 +456,7 @@ async function translate(rawText, direction) {
     src: text,
     // Китайский склеиваем вплотную, русский — через пробел: там пробел значим.
     dst: pieces.join(dir === "ru-zh" ? "" : " "),
+    words,
   };
   await cacheSet(key, result);
   return { ok: true, result, cached: false };
@@ -376,19 +480,68 @@ async function translatePiece(text, dir, depth = 0) {
   if (halves.length < 2) return one;
 
   const pieces = [];
+  const words = [];
   for (const half of halves) {
     const sub = await translatePiece(half, dir, depth + 1);
     if (!sub.ok) return sub;
     pieces.push(sub.result.dst);
+    mergeWords(words, sub.result.words || []);
   }
   return {
     ok: true,
-    result: { direction: dir, src: text, dst: pieces.join(dir === "ru-zh" ? "" : " ") },
+    result: {
+      direction: dir,
+      src: text,
+      dst: pieces.join(dir === "ru-zh" ? "" : " "),
+      words,
+    },
     cached: false,
   };
 }
 
+/**
+ * Разбор по словам из ответа сайта — в вид, который понимает карточка.
+ *
+ * Сервер в режиме `full` уже считает `words` (до 8 слов с пиньинем и
+ * переводом), и раньше это выбрасывалось: в карточке был только перевод.
+ * Теперь слова едут вместе с результатом и попадают в кэш, поэтому разбор
+ * не стоит ни одного лишнего запроса к модели.
+ *
+ * Мусор отбрасываем на входе: карточка строит DOM только через textContent,
+ * но пустые и не-китайские «слова» ей всё равно ни к чему.
+ */
+function normalizeWords(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const hanzi = String(item.hanzi ?? "").trim();
+    if (!hanzi || hanzi.length > 12 || !CJK.test(hanzi)) continue;
+    if (seen.has(hanzi)) continue;
+    seen.add(hanzi);
+    out.push({
+      hanzi,
+      pinyin: String(item.pinyin ?? "").trim().slice(0, 60),
+      ru: String(item.ru ?? "").trim().slice(0, 120),
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+/** Склеить разбор из нескольких порций: слово не должно повторяться дважды. */
+function mergeWords(target, extra, limit = 12) {
+  for (const word of extra) {
+    if (target.some((item) => item.hanzi === word.hanzi)) continue;
+    target.push(word);
+    if (target.length >= limit) break;
+  }
+  return target;
+}
+
 /** Одна порция: запрос к ручке и разбор её ответа. */
+
 async function translateChunk(text, dir) {
   const key = `${dir}|${text}`;
   const cached = await cacheGet(key);
@@ -411,7 +564,7 @@ async function translateChunk(text, dir) {
         "Сервер пока не умеет русский → 中文. Нужна правка /api/translate на сайте (см. site-patch).",
       );
     }
-    const result = { direction: dir, src: text, dst: String(zh) };
+    const result = { direction: dir, src: text, dst: String(zh), words: [] };
     await cacheSet(key, result);
     return { ok: true, result, cached: false };
   }
@@ -419,7 +572,12 @@ async function translateChunk(text, dir) {
   const ru = res.data && (res.data.ru || res.data.translation);
   if (!ru) return fail("UPSTREAM", "Сайт ответил без перевода.");
 
-  const result = { direction: dir, src: text, dst: String(ru) };
+  const result = {
+    direction: dir,
+    src: text,
+    dst: String(ru),
+    words: normalizeWords(res.data.words),
+  };
   await cacheSet(key, result);
   return { ok: true, result, cached: false };
 }
@@ -544,6 +702,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       getAuth(Boolean(msg.force)).then(sendResponse, (err) =>
         sendResponse({ user: null, error: String(err) }),
       );
+      return true;
+    }
+
+    case "ct:settings-get": {
+      settings().then(sendResponse, (err) => sendResponse({ ...SETTINGS_DEFAULTS, error: String(err) }));
+      return true;
+    }
+
+    case "ct:settings-set": {
+      saveSettings(msg.patch).then(sendResponse, (err) =>
+        sendResponse({ ...SETTINGS_DEFAULTS, error: String(err) }),
+      );
+      return true;
+    }
+
+    case "ct:word-save": {
+      wordSave(msg.word).then(sendResponse, (err) => sendResponse(fail("UNKNOWN", String(err))));
+      return true;
+    }
+
+    case "ct:words": {
+      wordsGet().then(
+        (words) => sendResponse({ ok: true, words, total: words.length }),
+        (err) => sendResponse(fail("UNKNOWN", String(err))),
+      );
+      return true;
+    }
+
+    case "ct:word-remove": {
+      wordRemove(msg.hanzi).then(sendResponse, (err) => sendResponse(fail("UNKNOWN", String(err))));
+      return true;
+    }
+
+    case "ct:words-clear": {
+      wordsClear().then(sendResponse, (err) => sendResponse(fail("UNKNOWN", String(err))));
       return true;
     }
 

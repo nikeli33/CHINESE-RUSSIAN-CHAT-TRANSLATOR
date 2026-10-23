@@ -124,7 +124,7 @@
       }
 
       section {
-        padding: 12px 14px;
+        padding: 10px 14px;
         border-bottom: 1px solid var(--paper-line);
       }
 
@@ -283,6 +283,142 @@
       footer a:hover {
         color: var(--cta);
       }
+
+      /* ── Настройки ─────────────────────────────────────────────────────── */
+
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 7px;
+        font-size: 12.5px;
+        color: var(--ink-strong);
+        cursor: pointer;
+      }
+
+      .check input {
+        width: 13px;
+        height: 13px;
+        margin: 0;
+        accent-color: var(--cta);
+      }
+
+      .field {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 7px;
+      }
+
+      .field-label {
+        font-size: 12.5px;
+        color: var(--ink-strong);
+      }
+
+      select {
+        height: 26px;
+        max-width: 150px;
+        padding: 0 6px;
+        font-family: var(--font-sans);
+        font-size: 12px;
+        color: var(--ink-strong);
+        background: var(--paper-hi);
+        border: 1px solid var(--paper-line);
+        border-radius: 2px;
+      }
+
+      /* ── Словарь ───────────────────────────────────────────────────────── */
+
+      .words {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 132px;
+        margin-top: 8px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+
+      .words[hidden] {
+        display: none;
+      }
+
+      .word {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        padding: 4px 0;
+        border-bottom: 1px solid var(--paper-line);
+      }
+
+      .word-hanzi {
+        flex: none;
+        font-family: var(--font-hanzi);
+        font-size: 14px;
+        color: var(--seal);
+      }
+
+      .word-py {
+        flex: none;
+        max-width: 88px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 10.5px;
+        color: var(--ink-muted);
+      }
+
+      .word-ru {
+        flex: 1;
+        font-size: 11.5px;
+        color: var(--ink);
+        overflow-wrap: anywhere;
+      }
+
+      .word-del {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border: 0;
+        border-radius: 2px;
+        background: transparent;
+        color: var(--ink-faint);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .word-del:hover {
+        color: var(--seal);
+        background: var(--paper);
+      }
+
+      /* Справка нужна в первый день, а не каждый — держим её свёрнутой,
+         иначе попап не влезает в 600px и начинает прокручиваться. */
+      .howto summary {
+        font-size: 10px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--bronze-deep);
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .howto summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .howto summary::after {
+        content: " ▾";
+        color: var(--ink-faint);
+      }
+
+      .howto[open] summary::after {
+        content: " ▴";
+      }
     </style>
   </head>
   <body>
@@ -318,19 +454,75 @@
     </section>
 
     <section>
-      <span class="label">Как пользоваться</span>
-      <ol class="steps">
-        <li>Выделите текст в любом чате</li>
-        <li>Нажмите <span class="seal-inline">译</span> рядом с выделением</li>
-        <li>Вставьте иероглифы в поле ввода</li>
-      </ol>
-      <div class="muted" style="margin-top: 8px">
-        Или правый клик по выделению → «Перевести».
+      <div class="row">
+        <span class="label">Настройки</span>
+        <span class="muted" id="settings-state">—</span>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="set-seal" />
+        <span>Печать <span class="seal-inline">译</span> при выделении</span>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="set-tts" />
+        <span>Кнопка озвучки в карточке</span>
+      </label>
+
+      <div class="field">
+        <span class="field-label">Тема карточки</span>
+        <select id="set-theme">
+          <option value="auto">под страницу</option>
+          <option value="light">светлая</option>
+          <option value="dark">тёмная</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Направление</span>
+        <select id="set-direction">
+          <option value="auto">определять</option>
+          <option value="zh-ru">中文 → рус</option>
+          <option value="ru-zh">рус → 中文</option>
+        </select>
       </div>
     </section>
 
+    <section>
+      <div class="row">
+        <span class="label">Словарь</span>
+        <span class="muted" id="words-count">пусто</span>
+      </div>
+
+      <div class="words" id="words-list" hidden></div>
+
+      <div class="muted" id="words-note" style="margin-top: 6px">
+        Слова из разбора сохраняются здесь, на этом компьютере.
+      </div>
+
+      <div class="actions" style="margin-top: 10px">
+        <button id="words-export" disabled>Экспорт CSV</button>
+        <button id="words-clear" disabled>Очистить</button>
+      </div>
+    </section>
+
+    <section>
+      <details class="howto">
+        <summary>Как пользоваться</summary>
+        <ol class="steps">
+          <li>Выделите текст в любом чате</li>
+          <li>Нажмите <span class="seal-inline">译</span> рядом с выделением</li>
+          <li>Вставьте иероглифы в поле ввода</li>
+        </ol>
+        <div class="muted" style="margin-top: 8px">
+          Или правый клик по выделению → «Перевести». Слова в карточке
+          сохраняются кликом.
+        </div>
+      </details>
+    </section>
+
     <footer>
-      <span>v0.1.0</span>
+      <span id="version">v—</span>
       <a href="https://honglong.nexusbots.ru" target="_blank" rel="noopener">honglong.nexusbots.ru</a>
     </footer>
 

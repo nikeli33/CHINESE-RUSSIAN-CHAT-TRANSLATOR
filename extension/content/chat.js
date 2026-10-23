@@ -54,6 +54,9 @@
     evaLog: null,
     evaSink: null,
     evaBusy: false,
+    // Настройки приезжают из службы при старте и обновляются на изменение
+    // хранилища. Значения по умолчанию здесь — только до первого ответа.
+    settings: { tts: true, autoSeal: true, theme: "auto", direction: "auto" },
   };
 
   /* ── Стили ─────────────────────────────────────────────────────────────── */
@@ -68,6 +71,45 @@
     return state.css;
   }
 
+  /* ── Тема карточки ─────────────────────────────────────────────────────── */
+
+  /**
+   * Тёмная ли страница. Смотрим настоящий цвет фона body/html, а не
+   * `prefers-color-scheme`: чаты сплошь и рядом тёмные при светлой системе
+   * (и наоборот), а карточка должна совпадать со страницей, а не с ОС.
+   * Системная тема — запасной вариант, когда фон прозрачный.
+   */
+  function pageIsDark() {
+    const bg = (node) => {
+      if (!node) return "";
+      const color = getComputedStyle(node).backgroundColor || "";
+      if (!color || color === "transparent") return "";
+      if (/^rgba\([^)]*,\s*0(\.0+)?\s*\)$/.test(color)) return "";
+      return color;
+    };
+
+    const color = bg(document.body) || bg(document.documentElement);
+    const match = color.match(/rgba?\(([^)]+)\)/);
+    if (match) {
+      const [r, g, b, a = 1] = match[1].split(",").map((part) => parseFloat(part));
+      if (a >= 0.5) {
+        const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        return lum < 0.5;
+      }
+    }
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+
+  function resolvedTheme() {
+    const chosen = state.settings.theme;
+    if (chosen === "dark" || chosen === "light") return chosen;
+    return pageIsDark() ? "dark" : "light";
+  }
+
+  function applyTheme() {
+    if (state.host) state.host.dataset.theme = resolvedTheme();
+  }
+
   async function ensureHost() {
     if (state.host && state.host.isConnected) return state.shadow;
 
@@ -79,6 +121,7 @@
     host.style.cssText =
       "position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;pointer-events:none;";
     (document.body || document.documentElement).appendChild(host);
+    host.dataset.theme = resolvedTheme();
 
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
@@ -509,6 +552,56 @@
     })();
   }
 
+  /* ── Слова из разбора ──────────────────────────────────────────────────── */
+
+  /**
+   * Чип слова: иероглиф, пиньинь, перевод. Клик — сохранить в личный словарь.
+   *
+   * Словарь живёт в расширении, а не в SRS сайта: карточка там хранит только
+   * иероглиф и ссылку на урок, а пиньинь с переводом сайт берёт из своего
+   * индекса лексики. Слово из чужого чата в этот индекс не входит, и очередь
+   * повторения (`/practice` фильтрует по индексу) молча его выбросила бы.
+   */
+  function wordChip(word) {
+    const chip = el("button", "ct-word");
+    chip.type = "button";
+    chip.title = "Сохранить в словарь";
+    chip.setAttribute("aria-label", `Сохранить в словарь: ${word.hanzi}`);
+
+    chip.appendChild(el("span", "ct-word-hanzi", word.hanzi));
+    if (word.pinyin) chip.appendChild(el("span", "ct-word-py", word.pinyin));
+    if (word.ru) chip.appendChild(el("span", "ct-word-ru", word.ru));
+
+    // mousedown гасим: иначе клик по чипу снимает выделение под карточкой.
+    chip.addEventListener("mousedown", (e) => e.preventDefault());
+    chip.addEventListener("click", () => void saveWord(word, chip));
+    return chip;
+  }
+
+  async function saveWord(word, chip) {
+    if (chip.dataset.saved === "1") return;
+
+    let response = null;
+    try {
+      response = await chrome.runtime.sendMessage({ type: "ct:word-save", word });
+    } catch {
+      response = null;
+    }
+
+    if (response && response.ok) {
+      chip.dataset.saved = "1";
+      chip.title = response.duplicate ? "Уже в словаре" : "В словаре";
+      chip.appendChild(el("span", "ct-word-mark", "✓"));
+      return;
+    }
+
+    chip.title = (response && response.message) || "Не удалось сохранить";
+    chip.dataset.failed = "1";
+    window.setTimeout(() => {
+      delete chip.dataset.failed;
+    }, 1200);
+  }
+
   function buildResult(card, saved, result) {
     const isZhTarget = result.direction === "ru-zh";
     const label = isZhTarget ? "русский → 中文" : "中文 → русский";
@@ -539,6 +632,14 @@
       const source = el("div", "ct-source", result.src);
       source.dataset.lang = CJK.test(result.src) ? "zh" : "ru";
       body.appendChild(source);
+    }
+
+    // Разбор по словам приходит вместе с переводом (сервер считает его в том
+    // же ответе), поэтому показываем сразу и бесплатно — без второго запроса.
+    if (Array.isArray(result.words) && result.words.length > 0) {
+      const words = el("div", "ct-words");
+      for (const word of result.words.slice(0, 6)) words.appendChild(wordChip(word));
+      body.appendChild(words);
     }
 
     card.appendChild(body);
@@ -591,7 +692,7 @@
         speak.disabled = false;
       });
     });
-    actions.appendChild(speak);
+    if (state.settings.tts) actions.appendChild(speak);
 
     card.appendChild(actions);
     evaBlock(card, saved);
@@ -778,8 +879,15 @@
     state.saved = saved;
     state.busy = true;
 
+    const preferred = state.settings.direction;
     const dir =
-      direction === "auto" || !direction ? (CJK.test(saved.text) ? "zh-ru" : "ru-zh") : direction;
+      direction === "auto" || !direction
+        ? preferred !== "auto"
+          ? preferred
+          : CJK.test(saved.text)
+            ? "zh-ru"
+            : "ru-zh"
+        : direction;
 
     const card = await mountCard(saved);
     if (!card) {
@@ -996,6 +1104,12 @@
   function onMouseUp(event) {
     rememberPath(event);
     if (state.host && event.composedPath && event.composedPath().includes(state.host)) return;
+    // Печать можно выключить: часть людей читает с тачпада и задевает
+    // выделение постоянно. Правый клик при этом работает как раньше.
+    if (!state.settings.autoSeal) {
+      hideSeal();
+      return;
+    }
 
     clearTimeout(sealTimer);
     // Даём браузеру дорисовать выделение: на mouseup getSelection() ещё
@@ -1037,6 +1151,36 @@
   document.addEventListener("keydown", onKeyDown, true);
   window.addEventListener("scroll", onScroll, { passive: true, capture: true });
   window.addEventListener("resize", onScroll, { passive: true });
+
+  /* ── Настройки ─────────────────────────────────────────────────────────── */
+
+  /** Значения по умолчанию живут в службе: здесь только копия для работы. */
+  async function loadSettings() {
+    let next = null;
+    try {
+      next = await chrome.runtime.sendMessage({ type: "ct:settings-get" });
+    } catch {
+      next = null; // расширение перезагрузили — работаем на умолчаниях
+    }
+    if (next && typeof next === "object" && !next.error) {
+      state.settings = {
+        tts: next.tts !== false,
+        autoSeal: next.autoSeal !== false,
+        theme: next.theme === "dark" || next.theme === "light" ? next.theme : "auto",
+        direction:
+          next.direction === "zh-ru" || next.direction === "ru-zh" ? next.direction : "auto",
+      };
+    }
+    applyTheme();
+  }
+
+  void loadSettings();
+
+  // Настройки меняются в попапе — вкладка узнаёт об этом без перезагрузки.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.ctSettings) return;
+    void loadSettings();
+  });
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg !== "object") return undefined;
